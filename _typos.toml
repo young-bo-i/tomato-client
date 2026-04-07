@@ -1,0 +1,12 @@
+[files]
+extend-exclude = [
+    "src-tauri/src/camoufox/data/*.json",
+    "src-tauri/src/camoufox/data/*.xml",
+    "src/i18n/locales/*.json",
+    "src-tauri/build.rs",
+    "src-tauri/tests/fixtures/test.ovpn",
+]
+
+[default.extend-words]
+DBE = "DBE"
+nd = "nd"
