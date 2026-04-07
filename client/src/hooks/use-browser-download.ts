@@ -1,0 +1,473 @@
+import { invoke } from "@tauri-apps/api/core";
+import type { Event as TauriEvent } from "@tauri-apps/api/event";
+import { listen } from "@tauri-apps/api/event";
+import { useCallback, useEffect, useState } from "react";
+import { getBrowserDisplayName } from "@/lib/browser-utils";
+import {
+  dismissToast,
+  showDownloadToast,
+  showErrorToast,
+  showSuccessToast,
+  showToast,
+} from "@/lib/toast-utils";
+
+interface GithubRelease {
+  tag_name: string;
+  assets: {
+    name: string;
+    browser_download_url: string;
+    hash?: string;
+  }[];
+  published_at: string;
+  is_nightly: boolean;
+}
+
+interface BrowserVersionInfo {
+  version: string;
+  is_prerelease: boolean;
+  date: string;
+}
+
+interface DownloadProgress {
+  browser: string;
+  version: string;
+  downloaded_bytes: number;
+  total_bytes?: number;
+  percentage: number;
+  speed_bytes_per_sec: number;
+  eta_seconds?: number;
+  stage: string;
+}
+
+interface BrowserVersionsResult {
+  versions: string[];
+  new_versions_count?: number;
+  total_versions_count: number;
+}
+
+export function useBrowserDownload() {
+  const [availableVersions, setAvailableVersions] = useState<GithubRelease[]>(
+    [],
+  );
+  const [downloadedVersionsMap, setDownloadedVersionsMap] = useState<
+    Record<string, string[]>
+  >({});
+  const [downloadingBrowsers, setDownloadingBrowsers] = useState<Set<string>>(
+    new Set(),
+  );
+  const [downloadProgress, setDownloadProgress] =
+    useState<DownloadProgress | null>(null);
+
+  const formatTime = useCallback((seconds: number): string => {
+    if (seconds < 60) {
+      return `${Math.round(seconds)}s`;
+    }
+    if (seconds < 3600) {
+      const minutes = Math.floor(seconds / 60);
+      const remainingSeconds = Math.round(seconds % 60);
+      return `${minutes}m ${remainingSeconds}s`;
+    }
+    const hours = Math.floor(seconds / 3600);
+    const minutes = Math.floor((seconds % 3600) / 60);
+    return `${hours}h ${minutes}m`;
+  }, []);
+
+  const formatBytes = useCallback((bytes: number): string => {
+    if (bytes === 0) return "0 B";
+    const k = 1024;
+    const sizes = ["B", "KB", "MB", "GB"];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return `${Number.parseFloat((bytes / k ** i).toFixed(1))} ${sizes[i]}`;
+  }, []);
+
+  const loadVersions = useCallback(async (browserStr: string) => {
+    const browserName = getBrowserDisplayName(browserStr);
+
+    // Use a simple loading state instead of toast for version fetching
+    console.log(`Fetching ${browserName} versions...`);
+
+    try {
+      const versionInfos = await invoke<BrowserVersionInfo[]>(
+        "fetch_browser_versions_cached_first",
+        { browserStr },
+      );
+
+      // Convert BrowserVersionInfo to GithubRelease format for compatibility
+      const githubReleases: GithubRelease[] = versionInfos.map(
+        (versionInfo) => ({
+          tag_name: versionInfo.version,
+          assets: [],
+          published_at: versionInfo.date,
+          is_nightly: versionInfo.is_prerelease,
+        }),
+      );
+
+      setAvailableVersions(githubReleases);
+      return githubReleases;
+    } catch (error) {
+      console.error("Failed to load versions:", error);
+      showErrorToast(`Failed to fetch ${browserName} versions`, {
+        description:
+          error instanceof Error ? error.message : "Unknown error occurred",
+        duration: 4000,
+      });
+      throw error;
+    }
+  }, []);
+
+  const loadVersionsWithNewCount = useCallback(async (browserStr: string) => {
+    const browserName = getBrowserDisplayName(browserStr);
+
+    try {
+      // Get versions with new count info and cached detailed info
+      const result = await invoke<BrowserVersionsResult>(
+        "fetch_browser_versions_with_count_cached_first",
+        { browserStr },
+      );
+
+      // Get detailed version info for compatibility
+      const versionInfos = await invoke<BrowserVersionInfo[]>(
+        "fetch_browser_versions_cached_first",
+        { browserStr },
+      );
+
+      // Convert BrowserVersionInfo to GithubRelease format for compatibility
+      const githubReleases: GithubRelease[] = versionInfos.map(
+        (versionInfo) => ({
+          tag_name: versionInfo.version,
+          assets: [],
+          published_at: versionInfo.date,
+          is_nightly: versionInfo.is_prerelease,
+        }),
+      );
+
+      setAvailableVersions(githubReleases);
+
+      // Show notification about new versions if any were found
+      if (result.new_versions_count && result.new_versions_count > 0) {
+        showSuccessToast(
+          `Found ${result.new_versions_count} new ${browserName} versions!`,
+          {
+            duration: 3000,
+            description: `Total available: ${result.total_versions_count} versions`,
+          },
+        );
+      }
+
+      return githubReleases;
+    } catch (error) {
+      console.error("Failed to load versions:", error);
+      showErrorToast(`Failed to fetch ${browserName} versions`, {
+        description:
+          error instanceof Error ? error.message : "Unknown error occurred",
+        duration: 4000,
+      });
+      throw error;
+    }
+  }, []);
+
+  const loadDownloadedVersions = useCallback(async (browserStr: string) => {
+    try {
+      const versions = await invoke<string[]>(
+        "get_downloaded_browser_versions",
+        { browserStr },
+      );
+      setDownloadedVersionsMap((prev) => ({ ...prev, [browserStr]: versions }));
+      return versions;
+    } catch (error) {
+      console.error("Failed to load downloaded versions:", error);
+      throw error;
+    }
+  }, []);
+
+  const downloadBrowser = useCallback(
+    async (
+      browserStr: string,
+      version: string,
+      suppressNotifications = false,
+    ) => {
+      const browserName = getBrowserDisplayName(browserStr);
+      setDownloadingBrowsers((prev) => new Set(prev).add(browserStr));
+
+      try {
+        // Check browser compatibility before attempting download
+        const isSupported = await invoke<boolean>(
+          "is_browser_supported_on_platform",
+          { browserStr },
+        );
+        if (!isSupported) {
+          const supportedBrowsers = await invoke<string[]>(
+            "get_supported_browsers",
+          );
+          throw new Error(
+            `${browserName} is not supported on your platform. Supported browsers: ${supportedBrowsers
+              .map(getBrowserDisplayName)
+              .join(", ")}`,
+          );
+        }
+
+        await invoke("download_browser", { browserStr, version });
+        await loadDownloadedVersions(browserStr);
+      } catch (error) {
+        console.error("Failed to download browser:", error);
+
+        if (!suppressNotifications) {
+          // Dismiss any existing download toast and show error
+          dismissToast(`download-${browserStr}-${version}`);
+
+          let errorMessage = "Unknown error occurred";
+          if (error instanceof Error) {
+            errorMessage = error.message;
+          } else if (typeof error === "string") {
+            errorMessage = error;
+          } else if (error && typeof error === "object" && "message" in error) {
+            errorMessage = String(error.message);
+          }
+
+          // Ensure the long-running download toast is dismissed, and show a finite error toast
+          dismissToast(`download-${browserStr}-${version}`);
+          showErrorToast(`Failed to download ${browserName} ${version}`, {
+            description: errorMessage,
+            duration: 8000,
+          });
+        }
+        throw error;
+      } finally {
+        setDownloadingBrowsers((prev) => {
+          const next = new Set(prev);
+          next.delete(browserStr);
+          return next;
+        });
+      }
+    },
+    [loadDownloadedVersions],
+  );
+
+  const isVersionDownloaded = useCallback(
+    (version: string) => {
+      return Object.values(downloadedVersionsMap).some((versions) =>
+        versions.includes(version),
+      );
+    },
+    [downloadedVersionsMap],
+  );
+
+  // Check if a browser type is currently downloading
+  const isBrowserDownloading = useCallback(
+    (browserStr: string) => {
+      return downloadingBrowsers.has(browserStr);
+    },
+    [downloadingBrowsers],
+  );
+
+  // Legacy isDownloading for backwards compatibility
+  const isDownloading = downloadingBrowsers.size > 0;
+
+  // Listen for download progress events (browsers) and GeoIP progress events
+  useEffect(() => {
+    let unlistenBrowser: (() => void) | null = null;
+    let unlistenGeoip: (() => void) | null = null;
+
+    const setupListeners = async () => {
+      try {
+        // Browser binaries download progress
+        unlistenBrowser = await listen<DownloadProgress>(
+          "download-progress",
+          async (event: TauriEvent<DownloadProgress>) => {
+            const progress = event.payload;
+            setDownloadProgress(progress);
+
+            if (
+              progress.stage === "downloading" ||
+              progress.stage === "extracting" ||
+              progress.stage === "verifying"
+            ) {
+              setDownloadingBrowsers((prev) => {
+                if (prev.has(progress.browser)) return prev;
+                return new Set(prev).add(progress.browser);
+              });
+            }
+
+            const browserName = getBrowserDisplayName(progress.browser);
+
+            if (progress.stage === "downloading") {
+              const speedMBps = (
+                progress.speed_bytes_per_sec /
+                (1024 * 1024)
+              ).toFixed(1);
+              const etaText = progress.eta_seconds
+                ? formatTime(progress.eta_seconds)
+                : "calculating...";
+
+              const toastId = `download-${browserName.toLowerCase()}-${progress.version}`;
+              showDownloadToast(
+                browserName,
+                progress.version,
+                "downloading",
+                {
+                  percentage: progress.percentage,
+                  speed: speedMBps,
+                  eta: etaText,
+                },
+                {
+                  onCancel: () => {
+                    invoke("cancel_download", {
+                      browserStr: progress.browser,
+                      version: progress.version,
+                    }).catch((err) => {
+                      console.error("Failed to cancel download:", err);
+                    });
+                    dismissToast(toastId);
+                  },
+                },
+              );
+            } else if (progress.stage === "extracting") {
+              showDownloadToast(browserName, progress.version, "extracting");
+            } else if (progress.stage === "verifying") {
+              showDownloadToast(browserName, progress.version, "verifying");
+            } else if (progress.stage === "cancelled") {
+              setDownloadingBrowsers((prev) => {
+                const next = new Set(prev);
+                next.delete(progress.browser);
+                return next;
+              });
+              dismissToast(
+                `download-${browserName.toLowerCase()}-${progress.version}`,
+              );
+              setDownloadProgress(null);
+            } else if (progress.stage === "error") {
+              setDownloadingBrowsers((prev) => {
+                const next = new Set(prev);
+                next.delete(progress.browser);
+                return next;
+              });
+              dismissToast(
+                `download-${browserName.toLowerCase()}-${progress.version}`,
+              );
+              setDownloadProgress(null);
+              showErrorToast(
+                `${browserName} ${progress.version}: extraction failed`,
+                {
+                  description:
+                    "The corrupt file was deleted. It will be re-downloaded on next attempt.",
+                },
+              );
+            } else if (progress.stage === "completed") {
+              setDownloadingBrowsers((prev) => {
+                const next = new Set(prev);
+                next.delete(progress.browser);
+                return next;
+              });
+              // On completion, refresh the downloaded versions for this browser and also refresh camoufox,
+              // since the Create dialog implicitly uses camoufox on the anti-detect tab
+              try {
+                await Promise.all([
+                  loadDownloadedVersions(progress.browser),
+                  progress.browser !== "camoufox"
+                    ? loadDownloadedVersions("camoufox")
+                    : Promise.resolve([]),
+                ]);
+              } catch {
+                /* empty */
+              }
+              showDownloadToast(browserName, progress.version, "completed");
+              setDownloadProgress(null);
+            }
+          },
+        );
+      } catch (error) {
+        console.error("Failed to setup download progress listener:", error);
+      }
+
+      try {
+        // GeoIP database download progress
+        unlistenGeoip = await listen<{
+          stage: string;
+          percentage: number;
+          message: string;
+          downloaded_bytes?: number;
+          total_bytes?: number;
+          speed_bytes_per_sec?: number;
+          eta_seconds?: number;
+        }>(
+          "geoip-download-progress",
+          (
+            event: TauriEvent<{
+              stage: string;
+              percentage: number;
+              message: string;
+              downloaded_bytes?: number;
+              total_bytes?: number;
+              speed_bytes_per_sec?: number;
+              eta_seconds?: number;
+            }>,
+          ) => {
+            const { stage, percentage, speed_bytes_per_sec, eta_seconds } =
+              event.payload;
+            if (stage === "downloading") {
+              const speedMBps = speed_bytes_per_sec
+                ? (speed_bytes_per_sec / (1024 * 1024)).toFixed(1)
+                : undefined;
+              const etaText = eta_seconds ? formatTime(eta_seconds) : undefined;
+              showToast({
+                id: "geoip-download",
+                type: "download",
+                title: "Downloading GeoIP database",
+                stage: "downloading",
+                progress: {
+                  percentage,
+                  ...(speedMBps ? { speed: speedMBps } : {}),
+                  ...(etaText ? { eta: etaText } : {}),
+                },
+              });
+            } else if (stage === "completed") {
+              showToast({
+                id: "geoip-download",
+                type: "download",
+                title: "GeoIP database downloaded successfully!",
+                stage: "completed",
+              });
+            }
+          },
+        );
+      } catch (error) {
+        console.error("Failed to setup GeoIP progress listener:", error);
+      }
+    };
+
+    void setupListeners();
+
+    return () => {
+      if (unlistenBrowser) {
+        try {
+          unlistenBrowser();
+        } catch (error) {
+          console.error("Failed to cleanup browser download listener:", error);
+        }
+      }
+      if (unlistenGeoip) {
+        try {
+          unlistenGeoip();
+        } catch (error) {
+          console.error("Failed to cleanup GeoIP progress listener:", error);
+        }
+      }
+    };
+  }, [formatTime, loadDownloadedVersions]);
+
+  return {
+    availableVersions,
+    downloadedVersionsMap,
+    isDownloading,
+    isBrowserDownloading,
+    downloadingBrowsers,
+    downloadProgress,
+    loadVersions,
+    loadVersionsWithNewCount,
+    loadDownloadedVersions,
+    downloadBrowser,
+    isVersionDownloaded,
+    formatBytes,
+    formatTime,
+  };
+}

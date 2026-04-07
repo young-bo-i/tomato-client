@@ -1,0 +1,43 @@
+# === Reference projects (copied from other repos, not part of this project) ===
+KolToolWeb/
+KolScheduled/
+kol-async/
+kol-tool/
+
+# === Dependencies ===
+node_modules/
+target/
+
+# === Build output ===
+dist/
+.next/
+out/
+
+# === Rust ===
+server/target/
+client/src-tauri/target/
+Cargo.lock
+
+# === Environment ===
+.env
+.env.local
+.env.*.local
+
+# === IDE ===
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# === OS ===
+.DS_Store
+Thumbs.db
+
+# === Logs ===
+*.log
+
+# === Tauri ===
+client/src-tauri/gen/
+
+# === pnpm ===
+client/pnpm-lock.yaml
