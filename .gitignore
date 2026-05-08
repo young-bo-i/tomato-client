@@ -40,6 +40,3 @@ Thumbs.db
 
 # === Tauri ===
 client/src-tauri/gen/
-
-# === pnpm ===
-client/pnpm-lock.yaml
