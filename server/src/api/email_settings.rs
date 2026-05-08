@@ -188,6 +188,71 @@ pub async fn send_test(
         })));
     };
 
+    // 提前抓常见配置坑,避免用户陷在"SMTP 接受了但邮件不到"的迷局里。
+    // 网易 163 / QQ / Gmail 都要求 From 头的地址必须等于已认证的 SMTP
+    // 账号,否则服务商内部丢弃邮件(SMTP 不报错)。
+    let mut warnings: Vec<String> = Vec::new();
+    let host_lower = settings.smtp_host.trim().to_lowercase();
+    let from_lower = settings.from_address.trim().to_lowercase();
+    let user_lower = settings.smtp_username.trim().to_lowercase();
+    let strict_provider = host_lower.contains("163.com")
+        || host_lower.contains("qq.com")
+        || host_lower.contains("126.com")
+        || host_lower.contains("gmail.com")
+        || host_lower.contains("aliyun.com")
+        || host_lower.contains("sina.com");
+    if strict_provider && !from_lower.is_empty() && !user_lower.is_empty() && from_lower != user_lower {
+        warnings.push(format!(
+            "from_address ({}) 与 smtp_username ({}) 不一致 — {} 强制要求一致,否则邮件会被服务商静默丢弃。建议把 from_address 改成 {}。",
+            settings.from_address, settings.smtp_username, settings.smtp_host, settings.smtp_username
+        ));
+    }
+    if host_lower == "smtp.163.com" {
+        warnings.push(
+            "163 邮箱坑提醒:smtp_password 必须是邮箱设置里的「客户端授权码」(开启 SMTP 服务时分配的 16 位字符串),不是邮箱登录密码。如果填登录密码会卡在认证失败。"
+                .into(),
+        );
+    }
+    if (host_lower.contains("163.com") || host_lower.contains("qq.com")) && settings.smtp_port == 25 {
+        warnings.push(
+            "国内邮箱 25 端口大多被云厂商屏蔽,推荐改用 587 (STARTTLS) 或 465 (SSL/TLS)。"
+                .into(),
+        );
+    }
+
+    // 在跑 lettre 之前先做一次裸 TCP connect 探测,能把"网络层不通"
+    // (云厂商屏蔽 outbound SMTP 端口、防火墙等)和"SMTP 业务错误"
+    // (账号/密码/from 不对)区分开。Aliyun ECS 默认屏蔽 25 端口,
+    // 部分账号也限制 587/465 — 如果是这种情况,业务报错没法说清,
+    // TCP probe 直接告诉用户"网络不通"。
+    let probe_addr = format!("{}:{}", settings.smtp_host, settings.smtp_port);
+    let probe_result = tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        tokio::net::TcpStream::connect(&probe_addr),
+    )
+    .await;
+    if let Err(_) = probe_result {
+        // outer Err = elapsed (5s timeout). DNS+TCP 都超时了。
+        return Ok(HttpResponse::BadGateway().json(json!({
+            "ok": false,
+            "error": format!(
+                "TCP 连接 {} 5 秒内没建立成功 — 极大概率是云厂商屏蔽了 outbound SMTP 端口。\n\
+                 Aliyun ECS 默认禁用 25 端口,部分账号也限制 465/587(需要在 Aliyun 控制台「申请解封 25 端口」或改走 SMTP 中继商如 Mailgun / 阿里邮件推送 Direct Mail / 腾讯云 SES)。",
+                probe_addr
+            ),
+            "diagnostic": "tcp_blocked",
+        })));
+    }
+    if let Ok(Err(e)) = probe_result {
+        // TCP connect 在 5s 内立即返回错误 (DNS resolve fail, ECONNREFUSED 等)。
+        return Ok(HttpResponse::BadGateway().json(json!({
+            "ok": false,
+            "error": format!("无法连接 SMTP 服务器 {}: {}", probe_addr, e),
+            "diagnostic": "tcp_error",
+        })));
+    }
+    // TCP probe 成功 — 网络层 OK,继续走完整 SMTP 流程。
+
     let subject = "Tomato KOL · 测试邮件";
 
     // Mobile-friendly HTML — admin clicks "send test" from the UI and
@@ -210,10 +275,24 @@ pub async fn send_test(
         Some("Tomato KOL · 自动测试通知"),
     );
 
-    match email_sender::send_html(&settings, &[to_addr.clone()], subject, &body_html).await {
-        Ok(()) => Ok(HttpResponse::Ok().json(json!({ "ok": true, "to": to_addr }))),
+    // 记下发送耗时,管理员就能直观看到 SMTP 是不是慢/卡。
+    let t0 = std::time::Instant::now();
+    let send_result = email_sender::send_html(&settings, &[to_addr.clone()], subject, &body_html).await;
+    let elapsed_ms = t0.elapsed().as_millis() as u64;
+
+    match send_result {
+        Ok(()) => Ok(HttpResponse::Ok().json(json!({
+            "ok": true,
+            "to": to_addr,
+            "elapsed_ms": elapsed_ms,
+            "warnings": warnings,
+            "hint": "SMTP 返回成功 ≠ 邮件一定到达。如果几分钟还看不到:① 检查垃圾邮件文件夹;② 上面 warnings 列出的配置问题(尤其 from_address 必须 = SMTP 认证账号);③ 163/QQ 等服务商的密码是「授权码」不是登录密码。",
+        }))),
         Err(e) => Ok(HttpResponse::BadGateway().json(json!({
-            "ok": false, "error": e
+            "ok": false,
+            "error": e,
+            "elapsed_ms": elapsed_ms,
+            "warnings": warnings,
         }))),
     }
 }

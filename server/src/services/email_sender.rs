@@ -9,6 +9,8 @@
 //!   * `use_tls = true`  + port 465   → implicit TLS (legacy SSL)
 //!   * `use_tls = true`  + any other  → STARTTLS upgrade (modern submission)
 
+use std::time::Duration;
+
 use lettre::message::header::ContentType;
 use lettre::message::Mailbox;
 use lettre::transport::smtp::authentication::Credentials;
@@ -18,6 +20,20 @@ use lettre::{AsyncSmtpTransport, AsyncTransport, Message, Tokio1Executor};
 use sqlx::Row;
 
 use crate::db::DbPool;
+
+/// Per-SMTP-operation timeout (TCP connect, TLS handshake, AUTH, DATA…).
+/// lettre's default is None which means unbounded — when SMTP is
+/// misconfigured (wrong host/port/TLS combo) the request hangs ~60s
+/// before the OS gives up, blocking the actix handler the whole time
+/// (UI loading spinner). 15s is plenty for any real SMTP server and
+/// fast-fails the bad-config case.
+const SMTP_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// Hard ceiling on the entire `send` call (connect + handshake + auth +
+/// DATA + close). Belt-and-braces in case lettre's per-op timeout is
+/// buggy. Slightly longer than SMTP_TIMEOUT so a healthy server doesn't
+/// trip it.
+const SMTP_OVERALL_TIMEOUT: Duration = Duration::from_secs(25);
 
 /// Verbatim copy of the row in `email_settings`. Loader returns this
 /// rather than expose sqlx types so callers don't pull in the schema
@@ -208,7 +224,8 @@ async fn send_with_content_type(
     };
 
     // Pick the right transport variant for the (TLS, port) combo. See
-    // the module-level docstring for the full matrix.
+    // the module-level docstring for the full matrix. Every variant
+    // gets the same per-op timeout — see SMTP_TIMEOUT for rationale.
     let port = settings.smtp_port as u16;
     let transport: AsyncSmtpTransport<Tokio1Executor> = if settings.use_tls {
         let tls = TlsParameters::new(settings.smtp_host.clone())
@@ -217,11 +234,13 @@ async fn send_with_content_type(
             // Implicit TLS from the very first byte (legacy SSL submission).
             AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&settings.smtp_host)
                 .port(port)
+                .timeout(Some(SMTP_TIMEOUT))
                 .tls(Tls::Wrapper(tls))
         } else {
             // STARTTLS: handshake starts plaintext, upgrades to TLS.
             AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&settings.smtp_host)
                 .port(port)
+                .timeout(Some(SMTP_TIMEOUT))
                 .tls(Tls::Required(tls))
         };
         if let Some(c) = creds {
@@ -231,6 +250,7 @@ async fn send_with_content_type(
     } else {
         let mut tb = AsyncSmtpTransport::<Tokio1Executor>::builder_dangerous(&settings.smtp_host)
             .port(port)
+            .timeout(Some(SMTP_TIMEOUT))
             .tls(Tls::None);
         if let Some(c) = creds {
             tb = tb.credentials(c);
@@ -238,9 +258,17 @@ async fn send_with_content_type(
         tb.build()
     };
 
-    transport
-        .send(message)
-        .await
-        .map_err(|e| format!("send: {e}"))?;
-    Ok(())
+    // Belt-and-braces: hard cap the entire send call so a stuck
+    // operation can't block the actix handler longer than the user
+    // is willing to wait. tokio::time::timeout gives a clean
+    // Result<Result<...>, Elapsed>.
+    match tokio::time::timeout(SMTP_OVERALL_TIMEOUT, transport.send(message)).await {
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(e)) => Err(format!("send: {e}")),
+        Err(_) => Err(format!(
+            "send timeout after {}s — check smtp_host/smtp_port/use_tls combo \
+             (e.g. host unreachable, wrong port, TLS expected but not configured)",
+            SMTP_OVERALL_TIMEOUT.as_secs()
+        )),
+    }
 }
