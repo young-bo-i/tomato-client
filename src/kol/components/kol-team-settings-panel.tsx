@@ -1,9 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useState } from "react";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { kolApi } from "../api/client";
 import { useKolAuth } from "../hooks/use-kol-auth";
+import type { SubordinateRow } from "../types";
 
 /// Same 5-bucket discrete set as the admin contribution. Centralizing
 /// the cadence labels here so the user sees the SAME wording whether
@@ -56,6 +58,8 @@ export function KolTeamSettingsPanel() {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [savedFlash, setSavedFlash] = useState(false);
+  const [subs, setSubs] = useState<SubordinateRow[]>([]);
+  const [subsLoading, setSubsLoading] = useState(true);
 
   // Initialize draft from user (passed in via auth context). Re-sync
   // when the user object changes (e.g. after refresh()).
@@ -67,6 +71,28 @@ export function KolTeamSettingsPanel() {
         : nearestAllowed(user.tier2_contribution_pct),
     );
   }, [user]);
+
+  // Fetch the caller's subordinates so they can see WHO this setting
+  // applies to. Refreshed on first mount only — the list changes only
+  // when admin reassigns hierarchy, which is rare.
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      try {
+        const rows = await kolApi.listMySubordinates();
+        if (!cancelled) setSubs(rows);
+      } catch (e) {
+        // Non-fatal: panel still shows the bucket selector even if
+        // the subordinate list fails to load.
+        console.warn("listMySubordinates failed:", e);
+      } finally {
+        if (!cancelled) setSubsLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   const dirty = user !== null && draft !== user.tier2_contribution_pct;
 
@@ -164,6 +190,56 @@ export function KolTeamSettingsPanel() {
             </span>
           )}
         </footer>
+      </section>
+
+      <section className="rounded-lg border p-4 flex flex-col gap-3">
+        <header className="flex items-baseline justify-between gap-2">
+          <h3 className="text-base font-semibold">我的下级</h3>
+          <span className="text-xs text-muted-foreground">
+            共 {subs.length} 个 ·{" "}
+            {subs.filter((s) => s.is_active).length} 启用
+          </span>
+        </header>
+        {subsLoading ? (
+          <p className="text-xs text-muted-foreground">加载中...</p>
+        ) : subs.length === 0 ? (
+          // Defensive — shouldn't normally reach this since the panel
+          // is gated on has_subordinates. Guard against the race where
+          // admin removes the last sub while the page is open.
+          <p className="text-xs text-muted-foreground">
+            当前没有下级。如果你刚被取消下级关系,请刷新页面。
+          </p>
+        ) : (
+          <ul className="flex flex-col divide-y">
+            {subs.map((s) => (
+              <li
+                key={s.id}
+                className="flex items-center justify-between gap-2 py-2 text-sm"
+              >
+                <div className="flex items-center gap-2 min-w-0">
+                  <span className="font-medium truncate">{s.username}</span>
+                  {s.email && (
+                    <span
+                      className="text-xs text-muted-foreground truncate"
+                      title={s.email}
+                    >
+                      · {s.email}
+                    </span>
+                  )}
+                </div>
+                <Badge
+                  variant={s.is_active ? "outline" : "destructive"}
+                  className="text-[10px] shrink-0"
+                >
+                  {s.is_active ? "启用" : "停用"}
+                </Badge>
+              </li>
+            ))}
+          </ul>
+        )}
+        <p className="text-[11px] text-muted-foreground">
+          下级关系由管理员维护。如需新增/删除/调换,请联系管理员。
+        </p>
       </section>
     </div>
   );

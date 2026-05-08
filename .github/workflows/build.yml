@@ -6,8 +6,12 @@ name: Build Client
 #
 # 产物在每次 run 的 "Artifacts" 区域下载,保留 30 天:
 #   - tomato-windows-x64    Win10/11 安装包 (.exe)
-#   - tomato-macos-arm64    Apple Silicon (.dmg / .app)
-#   - tomato-macos-x64      Intel Mac (.dmg / .app)
+#   - tomato-macos-arm64    Apple Silicon (M1/M2/M3/M4) (.dmg / .app)
+#
+# Intel Mac 已停产 (Apple 2020 年开始过渡到 ARM,2023 全线 ARM),不再
+# 单独构建 — 节省 ~30 分钟 CI 时间和 macOS runner 的 10× 配额消耗。
+# 万一未来有 Intel Mac 用户:Apple Rosetta 2 透明跑 ARM 二进制,只是
+# 启动稍慢一点,功能完全一样。
 on:
   push:
     tags:
@@ -29,9 +33,6 @@ jobs:
           - platform: macos-latest
             target: aarch64-apple-darwin
             label: macos-arm64
-          - platform: macos-latest
-            target: x86_64-apple-darwin
-            label: macos-x64
 
     runs-on: ${{ matrix.platform }}
 

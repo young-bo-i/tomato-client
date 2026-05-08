@@ -361,6 +361,17 @@ export interface MyTier2ContributionUpdate {
   tier2_contribution_pct: number;
 }
 
+/** One row in `GET /api/users/me/subordinates` — the caller's tier-2
+ * subordinates. Used by the team settings panel to show the user
+ * exactly who they're configuring contribution rates for. */
+export interface SubordinateRow {
+  id: number;
+  username: string;
+  email: string | null;
+  is_active: boolean;
+  created_at: string;
+}
+
 /** One row in the admin income panel. All amounts in 分 (cents). */
 export interface IncomeRow {
   profile_id: string;

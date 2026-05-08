@@ -73,13 +73,14 @@ export function KolAdminPanel({ currentUserId }: Props) {
       )}
 
       <div className="rounded-md border overflow-x-auto">
-        <Table className="min-w-[860px]">
+        <Table className="min-w-[960px]">
           <TableHeader>
             <TableRow>
               <TableHead className="w-16">ID</TableHead>
               <TableHead>用户名</TableHead>
               <TableHead className="w-24">角色</TableHead>
               <TableHead className="w-32">层级</TableHead>
+              <TableHead className="w-24">下级贡献</TableHead>
               <TableHead className="w-24">状态</TableHead>
               <TableHead>通知邮箱</TableHead>
               <TableHead>创建时间</TableHead>
@@ -90,7 +91,7 @@ export function KolAdminPanel({ currentUserId }: Props) {
             {loading && users.length === 0 ? (
               <TableRow>
                 <TableCell
-                  colSpan={8}
+                  colSpan={9}
                   className="text-center text-muted-foreground"
                 >
                   加载中...
@@ -99,7 +100,7 @@ export function KolAdminPanel({ currentUserId }: Props) {
             ) : users.length === 0 ? (
               <TableRow>
                 <TableCell
-                  colSpan={8}
+                  colSpan={9}
                   className="text-center text-muted-foreground"
                 >
                   暂无用户
@@ -108,6 +109,12 @@ export function KolAdminPanel({ currentUserId }: Props) {
             ) : (
               users.map((u) => {
                 const isSelf = u.id === currentUserId;
+                // tier2_contribution_pct is only meaningful for tier-1
+                // users (no parent + role=user). Show value with a
+                // muted hint when 0, "—" for admins/tier-2 since the
+                // column is just stored noise for them.
+                const isTier1 =
+                  u.role === "user" && u.parent_user_id === null;
                 return (
                   <TableRow key={u.id}>
                     <TableCell className="font-mono text-xs">{u.id}</TableCell>
@@ -128,6 +135,28 @@ export function KolAdminPanel({ currentUserId }: Props) {
                     </TableCell>
                     <TableCell>
                       <TierBadge user={u} />
+                    </TableCell>
+                    <TableCell>
+                      {isTier1 ? (
+                        <span
+                          className={`text-xs font-mono ${
+                            u.has_subordinates
+                              ? "text-foreground"
+                              : "text-muted-foreground"
+                          }`}
+                          title={
+                            u.has_subordinates
+                              ? "此用户的二级下级,采集词中(管理员拿走后)按此比例汇入此用户池"
+                              : "此用户暂无下级,值仅保存,实际不生效"
+                          }
+                        >
+                          {u.tier2_contribution_pct}%
+                        </span>
+                      ) : (
+                        <span className="text-xs text-muted-foreground">
+                          —
+                        </span>
+                      )}
                     </TableCell>
                     <TableCell>
                       <Badge variant={u.is_active ? "outline" : "destructive"}>
@@ -189,6 +218,11 @@ export function KolAdminPanel({ currentUserId }: Props) {
             u.is_active &&
             u.id !== editing?.id,
         )}
+        subordinates={
+          editing
+            ? users.filter((u) => u.parent_user_id === editing.id)
+            : []
+        }
         onOpenChange={(open) => {
           if (!open) setEditing(null);
         }}
@@ -198,6 +232,11 @@ export function KolAdminPanel({ currentUserId }: Props) {
       />
       <DeleteUserDialog
         user={deleting}
+        subordinates={
+          deleting
+            ? users.filter((u) => u.parent_user_id === deleting.id)
+            : []
+        }
         onOpenChange={(open) => {
           if (!open) setDeleting(null);
         }}
@@ -397,12 +436,17 @@ function EditUserDialog({
   user,
   currentUserId,
   tier1Candidates,
+  subordinates,
   onOpenChange,
   onSubmit,
 }: {
   user: User | null;
   currentUserId: number;
   tier1Candidates: User[];
+  /** Direct tier-2 subordinates of `user`. Used to show context next
+   * to the contribution selector ("此用户有 3 个下级:A, B, C") so the
+   * admin understands the scope of the setting. */
+  subordinates: User[];
   onOpenChange: (open: boolean) => void;
   onSubmit: (patch: UpdateUserRequest) => Promise<unknown>;
 }) {
@@ -577,10 +621,28 @@ function EditUserDialog({
                   );
                 })}
               </div>
-              <p className="text-[11px] text-muted-foreground">
-                此用户的二级下级,采集词中(管理员拿走后)按此比例汇入此用户池。
-                此用户也可以在自己的「团队管理」中修改。
-              </p>
+              {subordinates.length > 0 ? (
+                <p
+                  className="text-[11px] text-muted-foreground"
+                  title={subordinates.map((s) => s.username).join(", ")}
+                >
+                  此用户有 {subordinates.length} 个下级:
+                  {" "}
+                  <span className="text-foreground">
+                    {subordinates
+                      .slice(0, 3)
+                      .map((s) => s.username)
+                      .join("、")}
+                    {subordinates.length > 3 &&
+                      ` 等 ${subordinates.length} 人`}
+                  </span>
+                  。采集词中(管理员拿走后)按此比例汇入此用户池。
+                </p>
+              ) : (
+                <p className="text-[11px] text-muted-foreground">
+                  此用户暂无下级,值会保存,但分配新下级后才生效。
+                </p>
+              )}
             </div>
           )}
           <div className="flex items-center gap-2">
@@ -620,10 +682,16 @@ function EditUserDialog({
 
 function DeleteUserDialog({
   user,
+  subordinates,
   onOpenChange,
   onConfirm,
 }: {
   user: User | null;
+  /** Direct tier-2 subordinates of `user` (empty if any other case).
+   * When non-empty, the deletion will leave them as orphan tier-1 via
+   * the FK's `ON DELETE SET NULL`. We surface this so the operator
+   * isn't surprised. */
+  subordinates: User[];
   onOpenChange: (open: boolean) => void;
   onConfirm: () => Promise<unknown>;
 }) {
@@ -643,16 +711,34 @@ function DeleteUserDialog({
     }
   };
 
+  const hasSubs = subordinates.length > 0;
+
   return (
     <Dialog open={user !== null} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-sm">
         <DialogHeader>
           <DialogTitle>删除用户</DialogTitle>
         </DialogHeader>
-        <p className="text-sm">
-          确定要删除用户 <span className="font-medium">{user?.username}</span>{" "}
-          吗？ 此操作不可撤销。
-        </p>
+        <div className="space-y-3">
+          <p className="text-sm">
+            确定要删除用户{" "}
+            <span className="font-medium">{user?.username}</span> 吗？ 此操作不可撤销。
+          </p>
+          {hasSubs && (
+            <div className="rounded-md border border-warning/50 bg-warning/10 px-3 py-2 text-xs space-y-1">
+              <p className="font-semibold text-warning">
+                ⚠ 此用户有 {subordinates.length} 个下级
+              </p>
+              <p className="text-muted-foreground">
+                删除后,以下下级会自动「升级为一级」(他们仍然存在,但脱离层级关系,
+                需要你手动重新指派上级):
+              </p>
+              <p className="text-foreground font-mono break-all">
+                {subordinates.map((s) => s.username).join("、")}
+              </p>
+            </div>
+          )}
+        </div>
         {error && <p className="text-sm text-destructive">{error}</p>}
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>
