@@ -79,20 +79,52 @@ pub async fn run(pool: &DbPool) -> Result<(), String> {
 
     let http = build_http_client()?;
 
-    // Wrap concurrency around per-profile work. `.for_each` awaits
-    // every task — we don't propagate per-profile errors out, just log.
+    // Shared collector for the admin consolidated digest. Each
+    // newly-emailed (or even failed-to-email-owner) notice gets a row
+    // here so the admin sees the full picture at the end of the round.
+    // `Mutex` over Vec because handle_profile runs concurrently via
+    // buffer_unordered.
+    let admin_collector: std::sync::Arc<tokio::sync::Mutex<Vec<EmailedNotice>>> =
+        std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+
     futures_util::stream::iter(profiles)
         .map(|p| {
             let pool = pool.clone();
             let http = http.clone();
             let settings = settings.clone();
-            async move { handle_profile(&pool, &http, &settings, p).await }
+            let collector = admin_collector.clone();
+            async move {
+                handle_profile(&pool, &http, &settings, p, collector).await
+            }
         })
         .buffer_unordered(FETCH_CONCURRENCY)
         .for_each(|_| async {})
         .await;
 
+    // ── Admin consolidated digest ──────────────────────────────────
+    // Drain everything queued by handle_notice. Since `for_each` above
+    // joined every spawned task, all Arc clones have dropped by now —
+    // we just need the contents.
+    let collected: Vec<EmailedNotice> = {
+        let mut g = admin_collector.lock().await;
+        std::mem::take(&mut *g)
+    };
+    if !collected.is_empty() {
+        send_admin_consolidated_digest(pool, &settings, &collected).await;
+    }
+
     Ok(())
+}
+
+/// One newly-emailed (or attempted) notice queued for the admin digest.
+/// Cloneable so the Mutex fallback path can copy out without consuming.
+#[derive(Debug, Clone)]
+struct EmailedNotice {
+    profile_name: String,
+    owner_username: String,
+    title: String,
+    content_html: String,
+    notice_date: Option<NaiveDate>,
 }
 
 #[derive(Debug, Clone)]
@@ -142,6 +174,7 @@ async fn handle_profile(
     http: &reqwest_middleware::ClientWithMiddleware,
     settings: &EmailSettings,
     profile: ProfileInfo,
+    admin_collector: std::sync::Arc<tokio::sync::Mutex<Vec<EmailedNotice>>>,
 ) {
     // Fetch the latest 50 notices.
     let outcome = list_notices(http, &profile.token).await;
@@ -188,9 +221,9 @@ async fn handle_profile(
 
     // For each: skip if already in qimao_income_notice; else email + insert.
     for n in income_notices {
-        match handle_notice(pool, settings, &profile, n).await {
+        match handle_notice(pool, settings, &profile, n, &admin_collector).await {
             Ok(true) => tracing::info!(
-                "qimao_income_notice: emailed profile={} message_id={} title={:?}",
+                "qimao_income_notice: processed profile={} message_id={} title={:?}",
                 profile.profile_id,
                 n.id,
                 n.title
@@ -205,13 +238,17 @@ async fn handle_profile(
     }
 }
 
-/// Returns `Ok(true)` if a NEW email was sent, `Ok(false)` if the
-/// notice was already in the dedup table.
+/// Returns `Ok(true)` if this is a NEW notice (regardless of whether
+/// owner-side email succeeded), `Ok(false)` if it was already in the
+/// dedup table. New notices also get queued into `admin_collector` so
+/// they show up in the consolidated admin digest at the end of the
+/// round even when the per-owner email leg failed.
 async fn handle_notice(
     pool: &DbPool,
     settings: &EmailSettings,
     profile: &ProfileInfo,
     notice: &MessageItem,
+    admin_collector: &std::sync::Arc<tokio::sync::Mutex<Vec<EmailedNotice>>>,
 ) -> Result<bool, String> {
     // Dedup check. PK (profile_id, message_id) → existence = already
     // emailed. We don't UPDATE here — just skip.
@@ -271,6 +308,19 @@ async fn handle_notice(
     .await
     .map_err(|e| format!("insert notice {}: {e}", notice.id))?;
 
+    // Queue for admin digest BEFORE early-returning on send_error so
+    // admins always see new notices even when owner delivery failed.
+    {
+        let mut g = admin_collector.lock().await;
+        g.push(EmailedNotice {
+            profile_name: profile.profile_name.clone(),
+            owner_username: profile.owner_username.clone(),
+            title: notice.title.clone(),
+            content_html: notice.content.clone(),
+            notice_date,
+        });
+    }
+
     if let Some(err) = send_error {
         return Err(err);
     }
@@ -290,4 +340,109 @@ fn resolve_recipient(profile: &ProfileInfo, settings: &EmailSettings) -> Option<
         return Some(addr);
     }
     settings.recipients.first().cloned()
+}
+
+/// Send ONE consolidated digest to all admin recipients summarizing
+/// every new notice processed this round (across every user). Embeds
+/// each notice's full HTML body separated by horizontal rules; admins
+/// see exactly what each user saw, in one inbox item.
+///
+/// Skipped silently when no admin recipients are configured.
+async fn send_admin_consolidated_digest(
+    pool: &DbPool,
+    settings: &EmailSettings,
+    notices: &[EmailedNotice],
+) {
+    let recipients = email_sender::resolve_admin_recipients(pool, settings).await;
+    if recipients.is_empty() {
+        tracing::info!(
+            "qimao_income_notice: no admin recipients configured, skip consolidated digest ({} notices)",
+            notices.len()
+        );
+        return;
+    }
+
+    let subject = format!(
+        "[管理员速览] 七猫达人收益通知 · {} 条 · {} 位用户",
+        notices.len(),
+        notices
+            .iter()
+            .map(|n| n.owner_username.as_str())
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+    );
+    let body = render_admin_digest_body(notices);
+
+    match email_sender::send_html(settings, &recipients, &subject, &body).await {
+        Ok(()) => tracing::info!(
+            "qimao_income_notice: admin digest sent to {} recipient(s), {} notice(s)",
+            recipients.len(),
+            notices.len()
+        ),
+        Err(e) => tracing::warn!(
+            "qimao_income_notice: admin consolidated digest failed: {e}"
+        ),
+    }
+}
+
+/// Render the admin digest. Header summarizes count, then each notice
+/// gets a section: "User · profile_name · title (notice_date)" header
+/// + the notice's verbatim content_html. Sections separated by <hr>.
+/// HTML escape only the metadata header — content_html is upstream-
+/// trusted (qimao platform's own template) so it's embedded as-is.
+fn render_admin_digest_body(notices: &[EmailedNotice]) -> String {
+    use std::fmt::Write as _;
+    let now_str = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+
+    let mut html = String::new();
+    let _ = writeln!(
+        html,
+        r#"<!doctype html>
+<html><body style="font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif; color:#222;">
+<h2 style="margin:0 0 12px;color:#1a73e8;">七猫达人收益通知速览</h2>
+<p style="margin:0 0 12px;">本轮收到 <strong>{n}</strong> 条新通知,涉及 <strong>{u}</strong> 位用户。检查时间:{ts}</p>"#,
+        n = notices.len(),
+        u = notices
+            .iter()
+            .map(|x| x.owner_username.as_str())
+            .collect::<std::collections::BTreeSet<_>>()
+            .len(),
+        ts = html_escape_qimao(&now_str),
+    );
+
+    for (i, n) in notices.iter().enumerate() {
+        if i > 0 {
+            let _ = writeln!(
+                html,
+                r#"<hr style="border:0;border-top:1px solid #e5e6e8;margin:24px 0;" />"#
+            );
+        }
+        let date_str = n
+            .notice_date
+            .map(|d| d.format("%Y-%m-%d").to_string())
+            .unwrap_or_else(|| "—".to_string());
+        let _ = writeln!(
+            html,
+            r#"<div style="margin:16px 0 8px;padding:8px 12px;background:#f5f6f8;border-radius:6px;font-size:13px;">
+<div style="font-weight:600;color:#1a73e8;">{title}</div>
+<div style="color:#666;font-size:12px;margin-top:4px;">用户:@{owner} · 账号:{profile} · 通知日期:{date}</div>
+</div>
+<div style="padding:0 12px;">{content}</div>"#,
+            title = html_escape_qimao(&n.title),
+            owner = html_escape_qimao(&n.owner_username),
+            profile = html_escape_qimao(&n.profile_name),
+            date = html_escape_qimao(&date_str),
+            content = n.content_html, // platform-trusted upstream HTML
+        );
+    }
+
+    let _ = writeln!(html, "</body></html>");
+    html
+}
+
+fn html_escape_qimao(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }

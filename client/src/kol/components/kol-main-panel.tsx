@@ -6,6 +6,7 @@ import { useMemo, useState } from "react";
 import { useKolAuth } from "../hooks/use-kol-auth";
 import { KolDomDumpPanel } from "./kol-dom-dump-panel";
 import { KolDouyinVideosPanel } from "./kol-douyin-videos-panel";
+import { KolPasswordChangeButton } from "./kol-password-change-dialog";
 import { KolQimaoStatsPanel } from "./kol-qimao-stats-panel";
 import { KolSideNav, type NavGroup } from "./kol-side-nav";
 import { KolTeamSettingsPanel } from "./kol-team-settings-panel";
@@ -92,9 +93,12 @@ export function KolMainPanel() {
           <span className="text-xs text-muted-foreground truncate">{user.username}</span>
           {tierBadge}
         </div>
-        <Button variant="ghost" size="sm" onClick={logout} className="shrink-0">
-          退出
-        </Button>
+        <div className="flex items-center gap-1 shrink-0">
+          <KolPasswordChangeButton />
+          <Button variant="ghost" size="sm" onClick={logout}>
+            退出
+          </Button>
+        </div>
       </div>
 
       {/* Body: sidebar + content */}

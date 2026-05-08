@@ -89,8 +89,16 @@ async fn process_pending(pool: &DbPool, abogus_url: &str) -> Result<usize, Strin
     // for legacy rows that have no target set.
     #[derive(sqlx::FromRow)]
     struct Peek { user_id: i32, target_profile_id: Option<uuid::Uuid> }
+    // Skip disabled users entirely — admin can disable a user mid-flight
+    // and their pending tomato_aliases rows must stop being processed
+    // until they're re-enabled (the rows themselves are preserved).
     let peek: Option<Peek> = sqlx::query_as(
-        "SELECT user_id, target_profile_id FROM tomato_aliases WHERE status = 'pending' ORDER BY created_at LIMIT 1"
+        r#"SELECT ta.user_id, ta.target_profile_id
+           FROM tomato_aliases ta
+           JOIN users u ON u.id = ta.user_id
+           WHERE ta.status = 'pending' AND u.is_active = TRUE
+           ORDER BY ta.created_at
+           LIMIT 1"#,
     )
     .fetch_optional(pool)
     .await

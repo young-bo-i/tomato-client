@@ -223,11 +223,20 @@ async fn run_round(pool: &DbPool, abogus_url: &str) -> Result<usize, String> {
         }
     }
 
-    // ── Step 7: send diff emails grouped by recipient ──────────────
+    // ── Step 7: send diff emails ──────────────────────────────────
+    // Two-phase email delivery:
+    //   (a) per-owner digest: each user gets ONE email summarizing
+    //       their own profiles' diffs (existing behavior).
+    //   (b) admin consolidated digest: one email covering ALL users'
+    //       diffs across the system, sent to every active admin user
+    //       + email_settings.recipients. Lets a single admin watch
+    //       the entire fleet without subscribing to N user mailboxes.
+    // (b) runs even if (a) was skipped — admins still want visibility.
     if !emailable.is_empty() {
         match email_sender::load(pool).await {
             Ok(settings) if settings.validation_error().is_none() => {
                 send_diff_emails(pool, &settings, &emailable).await;
+                send_admin_consolidated_digest(pool, &settings, &emailable).await;
             }
             Ok(_) => {
                 tracing::info!(
@@ -638,5 +647,54 @@ fn html_escape(s: &str) -> String {
         .replace('<', "&lt;")
         .replace('>', "&gt;")
         .replace('"', "&quot;")
+}
+
+
+/// Send ONE consolidated digest covering every user's diffs to all
+/// admin recipients. Distinct from `send_diff_emails`:
+///   * No per-recipient grouping — admins see the whole fleet.
+///   * Subject prefixed with "[管理员速览]" so admins can mail-rule
+///     it apart from their own per-owner digests.
+///   * Does NOT touch `last_emailed_at` / `last_email_error` — those
+///     are owned by the per-owner path. Admin failures only log.
+///
+/// Skipped silently when no admin recipients are configured (no admin
+/// users with email + empty `email_settings.recipients`).
+async fn send_admin_consolidated_digest(
+    pool: &DbPool,
+    settings: &EmailSettings,
+    emailable: &[EmailableUpdate],
+) {
+    let recipients = email_sender::resolve_admin_recipients(pool, settings).await;
+    if recipients.is_empty() {
+        tracing::info!(
+            "tomato_income: no admin recipients configured, skipping consolidated digest"
+        );
+        return;
+    }
+
+    let total_diff: i64 = emailable.iter().map(|u| u.diff).sum();
+    let subject = format!(
+        "[管理员速览] 番茄达人收益更新 · {} 个账号 · +{}",
+        emailable.len(),
+        fmt_yuan(total_diff)
+    );
+
+    // Reuse render_diff_email_body — accepts &[&EmailableUpdate],
+    // we already have &[EmailableUpdate] so collect references.
+    let refs: Vec<&EmailableUpdate> = emailable.iter().collect();
+    let body = render_diff_email_body(&refs);
+
+    match email_sender::send_html(settings, &recipients, &subject, &body).await {
+        Ok(()) => tracing::info!(
+            "tomato_income: admin digest sent to {} recipient(s), {} accounts +{}",
+            recipients.len(),
+            emailable.len(),
+            fmt_yuan(total_diff),
+        ),
+        Err(e) => tracing::warn!(
+            "tomato_income: admin consolidated digest failed: {e}"
+        ),
+    }
 }
 

@@ -162,18 +162,23 @@ async fn fetch_candidates(pool: &DbPool) -> Result<Vec<(Uuid, String, String)>, 
     // Static SQL (no format!()) so sqlx + Postgres can cache the
     // prepared statement plan across rounds. The 12h window is the
     // legacy C# refresh cadence and never changes at runtime.
+    // Owner-active gate: don't waste sign-in attempts on disabled
+     // users' qimao profiles. Tokens stay stale until re-enabled (and
+    // will refresh on the next scheduled tick after that).
     let rows = sqlx::query(
-        r#"SELECT id, qimao_identifier, qimao_credential
-           FROM browser_profiles
-           WHERE kol_platform = 'qimao'
-             AND qimao_identifier IS NOT NULL AND qimao_identifier <> ''
-             AND qimao_credential IS NOT NULL AND qimao_credential <> ''
+        r#"SELECT bp.id, bp.qimao_identifier, bp.qimao_credential
+           FROM browser_profiles bp
+           JOIN users u ON u.id = bp.user_id
+           WHERE bp.kol_platform = 'qimao'
+             AND bp.qimao_identifier IS NOT NULL AND bp.qimao_identifier <> ''
+             AND bp.qimao_credential IS NOT NULL AND bp.qimao_credential <> ''
+             AND u.is_active = TRUE
              AND (
-                 qimao_token IS NULL
-                 OR qimao_token_refreshed_at IS NULL
-                 OR qimao_token_refreshed_at < NOW() - INTERVAL '12 hours'
+                 bp.qimao_token IS NULL
+                 OR bp.qimao_token_refreshed_at IS NULL
+                 OR bp.qimao_token_refreshed_at < NOW() - INTERVAL '12 hours'
              )
-           ORDER BY qimao_token_refreshed_at NULLS FIRST
+           ORDER BY bp.qimao_token_refreshed_at NULLS FIRST
            LIMIT 50"#,
     )
     .fetch_all(pool)

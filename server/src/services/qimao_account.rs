@@ -51,12 +51,15 @@ pub async fn pick_active_for_profile(
     pool: &DbPool,
     profile_id: uuid::Uuid,
 ) -> Result<Option<SelectedAccount>, String> {
+    // Owner-active gate (defense in depth — same reason as tomato_cookie).
     let row = sqlx::query(
         r#"SELECT bp.id AS profile_id, bp.qimao_token AS token
            FROM browser_profiles bp
+           JOIN users u ON u.id = bp.user_id
            WHERE bp.id = $1
              AND bp.qimao_token IS NOT NULL
              AND bp.qimao_token <> ''
+             AND u.is_active = TRUE
            LIMIT 1"#,
     )
     .bind(profile_id)

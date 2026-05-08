@@ -97,15 +97,19 @@ pub async fn start_worker(pool: Arc<DbPool>, abogus_url: Arc<String>) {
 }
 
 async fn process_pending(pool: &DbPool, abogus_url: &str) -> Result<usize, String> {
+    // Skip disabled users — their backfill-pending rows wait until
+    // re-enabled (consistent with the submission stage gate).
     let user_id: Option<i32> = sqlx::query_scalar(
-        r#"SELECT user_id FROM tomato_aliases
-           WHERE status = 'submitted' AND backfill_status = 'pending'
-             AND alias_id IS NOT NULL
-             AND submitted_at IS NOT NULL
-             AND submitted_at < NOW() - INTERVAL '5 minutes'
-             AND (backfill_last_attempt_at IS NULL
-                  OR backfill_last_attempt_at < NOW() - INTERVAL '10 minutes')
-           ORDER BY submitted_at LIMIT 1"#,
+        r#"SELECT ta.user_id FROM tomato_aliases ta
+           JOIN users u ON u.id = ta.user_id
+           WHERE ta.status = 'submitted' AND ta.backfill_status = 'pending'
+             AND ta.alias_id IS NOT NULL
+             AND ta.submitted_at IS NOT NULL
+             AND ta.submitted_at < NOW() - INTERVAL '5 minutes'
+             AND (ta.backfill_last_attempt_at IS NULL
+                  OR ta.backfill_last_attempt_at < NOW() - INTERVAL '10 minutes')
+             AND u.is_active = TRUE
+           ORDER BY ta.submitted_at LIMIT 1"#,
     )
     .fetch_optional(pool)
     .await

@@ -307,6 +307,29 @@ class KolApi {
     );
   }
 
+  /// List the caller's direct tier-2 subordinates. Empty array when
+  /// the caller has none. Used by the team settings panel.
+  listMySubordinates(): Promise<import("../types").SubordinateRow[]> {
+    return this.request<import("../types").SubordinateRow[]>(
+      "GET",
+      "/api/users/me/subordinates",
+    );
+  }
+
+  /// Caller changes their own password. Requires old-password
+  /// verification (admin uses `updateUser` to reset others' passwords
+  /// without verification).
+  changeMyPassword(payload: {
+    old_password: string;
+    new_password: string;
+  }): Promise<{ ok: boolean }> {
+    return this.request<{ ok: boolean }>(
+      "PUT",
+      "/api/users/me/password",
+      payload,
+    );
+  }
+
   /// Admin income panel — list of all polled tomato accounts with
   /// their latest snapshot. Returned newest-balance-first.
   listIncome(): Promise<IncomeRow[]> {

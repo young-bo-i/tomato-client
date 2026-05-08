@@ -34,6 +34,14 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
                     .route(
                         "/tier2_contribution",
                         web::put().to(users_self::update_my_tier2_contribution),
+                    )
+                    .route(
+                        "/subordinates",
+                        web::get().to(users_self::list_my_subordinates),
+                    )
+                    .route(
+                        "/password",
+                        web::put().to(users_self::change_my_password),
                     ),
             )
             .service(

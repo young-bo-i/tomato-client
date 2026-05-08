@@ -70,13 +70,20 @@ pub async fn pick_online_for_profile(
     pool: &DbPool,
     profile_id: uuid::Uuid,
 ) -> Result<Option<SelectedCookie>, String> {
+    // JOIN users + AND u.is_active to close the peek→pick race window:
+    // if the worker peeked when the owner was active and admin disabled
+    // them in the millisecond gap, this gate stops the cookie from
+    // being handed out anyway.
     let row = sqlx::query(
         r#"SELECT pkc.profile_id, pkc.cookies
            FROM platform_kol_cookies pkc
+           JOIN browser_profiles bp ON bp.id = pkc.profile_id
+           JOIN users u             ON u.id = bp.user_id
            WHERE pkc.profile_id = $1
              AND pkc.platform = $2
              AND pkc.domain = $3
              AND pkc.is_online = TRUE
+             AND u.is_active = TRUE
            LIMIT 1"#,
     )
     .bind(profile_id)

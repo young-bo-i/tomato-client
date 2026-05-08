@@ -10,6 +10,7 @@ import { KolEmailSettingsPanel } from "./kol-email-settings-panel";
 import { KolGlobalSettingsPanel } from "./kol-global-settings-panel";
 import { KolIncomePanel } from "./kol-income-panel";
 import { KolJobsPanel } from "./kol-jobs-panel";
+import { KolPasswordChangeButton } from "./kol-password-change-dialog";
 import { KolQimaoBooksPanel } from "./kol-qimao-books-panel";
 import { KolQimaoNoticePanel } from "./kol-qimao-notice-panel";
 import { KolSideNav, type NavGroup } from "./kol-side-nav";
@@ -72,9 +73,12 @@ export function KolAdminConfigPanel() {
           <span className="text-xs text-muted-foreground truncate">{user.username}</span>
           <Badge variant="default" className="text-[10px] shrink-0">管理员</Badge>
         </div>
-        <Button variant="ghost" size="sm" onClick={logout} className="shrink-0">
-          退出
-        </Button>
+        <div className="flex items-center gap-1 shrink-0">
+          <KolPasswordChangeButton />
+          <Button variant="ghost" size="sm" onClick={logout}>
+            退出
+          </Button>
+        </div>
       </div>
 
       {/* Body: sidebar + content */}

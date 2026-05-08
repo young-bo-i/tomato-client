@@ -59,14 +59,17 @@ pub async fn start_worker(pool: Arc<DbPool>) {
 }
 
 async fn process_pending(pool: &DbPool) -> Result<usize, String> {
+    // Disabled-user gate (same as the submission worker).
     let user_id: Option<i32> = sqlx::query_scalar(
-        r#"SELECT user_id FROM qimao_aliases
-           WHERE status = 'submitted' AND backfill_status = 'pending'
-             AND submitted_at IS NOT NULL
-             AND submitted_at < NOW() - INTERVAL '5 minutes'
-             AND (backfill_last_attempt_at IS NULL
-                  OR backfill_last_attempt_at < NOW() - INTERVAL '10 minutes')
-           ORDER BY submitted_at LIMIT 1"#,
+        r#"SELECT qa.user_id FROM qimao_aliases qa
+           JOIN users u ON u.id = qa.user_id
+           WHERE qa.status = 'submitted' AND qa.backfill_status = 'pending'
+             AND qa.submitted_at IS NOT NULL
+             AND qa.submitted_at < NOW() - INTERVAL '5 minutes'
+             AND (qa.backfill_last_attempt_at IS NULL
+                  OR qa.backfill_last_attempt_at < NOW() - INTERVAL '10 minutes')
+             AND u.is_active = TRUE
+           ORDER BY qa.submitted_at LIMIT 1"#,
     )
     .fetch_optional(pool)
     .await

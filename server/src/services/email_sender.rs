@@ -91,6 +91,48 @@ pub async fn load(pool: &DbPool) -> Result<EmailSettings, String> {
     })
 }
 
+/// Resolve the canonical admin notification recipient list.
+///
+/// Two sources, deduped + trimmed:
+///   1. `users.email` for every active admin user (`role='admin' AND is_active=TRUE`)
+///   2. `email_settings.recipients` (the legacy explicit list — kept
+///      for compatibility and as a way to add non-user inboxes like
+///      `ops@company.com` without creating a fake user row)
+///
+/// Returned in stable (BTreeSet) order so the digest's recipient list
+/// is reproducible across rounds. Empty list means no admin email is
+/// configured anywhere — callers must handle that case (typically by
+/// just not sending the consolidated digest).
+pub async fn resolve_admin_recipients(
+    pool: &DbPool,
+    settings: &EmailSettings,
+) -> Vec<String> {
+    let admin_rows: Vec<Option<String>> = sqlx::query_scalar(
+        r#"SELECT email FROM users
+           WHERE role = 'admin' AND is_active = TRUE
+             AND email IS NOT NULL AND email <> ''
+           ORDER BY id"#,
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+
+    let mut set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for e in admin_rows.into_iter().flatten() {
+        let t = e.trim().to_string();
+        if !t.is_empty() {
+            set.insert(t);
+        }
+    }
+    for e in &settings.recipients {
+        let t = e.trim().to_string();
+        if !t.is_empty() {
+            set.insert(t);
+        }
+    }
+    set.into_iter().collect()
+}
+
 /// Send a plain-text email. Returns `Ok(())` only after the SMTP
 /// server has acknowledged the message. Caller decides how to
 /// surface failures (the admin "test" endpoint surfaces the error

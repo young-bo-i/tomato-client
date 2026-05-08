@@ -14,8 +14,11 @@
 //! is true.
 
 use actix_web::{web, HttpResponse};
-use serde::Deserialize;
+use chrono::{DateTime, Local};
+use serde::{Deserialize, Serialize};
+use sqlx::FromRow;
 
+use crate::auth::password;
 use crate::auth::AuthUser;
 use crate::db::DbPool;
 use crate::errors::{AppError, AppResult};
@@ -85,4 +88,93 @@ pub async fn update_my_tier2_contribution(
     }
 
     Ok(HttpResponse::Ok().json(serde_json::json!({ "ok": true })))
+}
+
+/// `PUT /api/users/me/password` — caller changes their own password.
+/// Requires the old password for verification (admins use the unguarded
+/// admin patch endpoint to reset others' passwords).
+#[derive(Debug, Deserialize)]
+pub struct ChangePasswordBody {
+    pub old_password: String,
+    pub new_password: String,
+}
+
+pub async fn change_my_password(
+    pool: web::Data<DbPool>,
+    user: AuthUser,
+    body: web::Json<ChangePasswordBody>,
+) -> AppResult<HttpResponse> {
+    let body = body.into_inner();
+    if body.new_password.len() < 6 {
+        return Err(AppError::BadRequest(
+            "new password must be at least 6 chars".into(),
+        ));
+    }
+    if body.old_password == body.new_password {
+        return Err(AppError::BadRequest(
+            "new password must differ from old".into(),
+        ));
+    }
+
+    // Pull current hash. We deliberately do NOT use a single
+    // CTE-style UPDATE-where-old-hash-matches: argon2 verification
+    // happens in user-space (not in postgres), so we have to fetch
+    // and compare in two steps.
+    let current_hash: Option<String> =
+        sqlx::query_scalar("SELECT password_hash FROM users WHERE id = $1")
+            .bind(user.0.sub)
+            .fetch_optional(pool.get_ref())
+            .await?;
+
+    let current_hash = current_hash
+        .ok_or_else(|| AppError::NotFound(format!("user {}", user.0.sub)))?;
+
+    if !password::verify(&body.old_password, &current_hash) {
+        return Err(AppError::BadRequest("old password incorrect".into()));
+    }
+
+    let new_hash = password::hash(&body.new_password).map_err(AppError::Internal)?;
+    sqlx::query("UPDATE users SET password_hash = $1 WHERE id = $2")
+        .bind(&new_hash)
+        .bind(user.0.sub)
+        .execute(pool.get_ref())
+        .await?;
+
+    Ok(HttpResponse::Ok().json(serde_json::json!({ "ok": true })))
+}
+
+/// One row in the "my subordinates" list. Minimal projection — no
+/// password_hash, no parent_user_id (always == caller's id), no
+/// tier2_contribution_pct (irrelevant: tier-2 rows leave it at 0).
+#[derive(Debug, Serialize, FromRow)]
+pub struct SubordinateRow {
+    pub id: i32,
+    pub username: String,
+    pub email: Option<String>,
+    pub is_active: bool,
+    pub created_at: DateTime<Local>,
+}
+
+/// `GET /api/users/me/subordinates` — list the caller's direct tier-2
+/// subordinates. Empty list when the caller has none (any role).
+///
+/// Auth: any logged-in user. Used by the team-management panel for
+/// tier-1 users to see WHO they're configuring contribution rates for.
+/// Admin viewing other users' subordinates goes through the admin
+/// list endpoint (which returns all rows; the UI can filter client-side).
+pub async fn list_my_subordinates(
+    pool: web::Data<DbPool>,
+    user: AuthUser,
+) -> AppResult<HttpResponse> {
+    let rows = sqlx::query_as::<_, SubordinateRow>(
+        r#"SELECT id, username, email, is_active, created_at
+           FROM users
+           WHERE parent_user_id = $1
+           ORDER BY id ASC"#,
+    )
+    .bind(user.0.sub)
+    .fetch_all(pool.get_ref())
+    .await?;
+
+    Ok(HttpResponse::Ok().json(rows))
 }

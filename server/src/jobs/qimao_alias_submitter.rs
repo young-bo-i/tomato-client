@@ -53,8 +53,15 @@ pub async fn start_worker(pool: Arc<DbPool>) {
 async fn process_pending(pool: &DbPool) -> Result<usize, String> {
     #[derive(sqlx::FromRow)]
     struct Peek { user_id: i32, target_profile_id: Option<uuid::Uuid> }
+    // Disabled users' pending rows are skipped (preserved in DB; resume
+    // when re-enabled). See alias_submitter for the same gate pattern.
     let peek: Option<Peek> = sqlx::query_as(
-        "SELECT user_id, target_profile_id FROM qimao_aliases WHERE status = 'pending' ORDER BY created_at LIMIT 1"
+        r#"SELECT qa.user_id, qa.target_profile_id
+           FROM qimao_aliases qa
+           JOIN users u ON u.id = qa.user_id
+           WHERE qa.status = 'pending' AND u.is_active = TRUE
+           ORDER BY qa.created_at
+           LIMIT 1"#,
     )
     .fetch_optional(pool)
     .await
