@@ -133,19 +133,19 @@ struct ProfileInfo {
     profile_id: Uuid,
     profile_name: String,
     token: String,
-    /// Owner's email (NULL if owner has no email set). When NULL the
-    /// job falls back to admin `email_settings.recipients[0]`.
-    owner_email: Option<String>,
+    /// Owner's `users.notify_emails` list. Empty = owner didn't configure
+    /// → fall back to `email_settings.recipients` at email-send time.
+    owner_emails: Vec<String>,
     owner_username: String,
 }
 
 async fn list_active_qimao_profiles(pool: &DbPool) -> Result<Vec<ProfileInfo>, String> {
     let rows = sqlx::query(
-        r#"SELECT bp.id            AS profile_id,
-                  bp.name          AS profile_name,
-                  bp.qimao_token   AS token,
-                  u.email          AS owner_email,
-                  u.username       AS owner_username
+        r#"SELECT bp.id              AS profile_id,
+                  bp.name            AS profile_name,
+                  bp.qimao_token     AS token,
+                  u.notify_emails    AS owner_emails,
+                  u.username         AS owner_username
            FROM browser_profiles bp
            JOIN users u ON u.id = bp.user_id
            WHERE bp.kol_platform = 'qimao'
@@ -159,11 +159,16 @@ async fn list_active_qimao_profiles(pool: &DbPool) -> Result<Vec<ProfileInfo>, S
 
     let mut out = Vec::with_capacity(rows.len());
     for r in rows {
+        let emails_json: serde_json::Value = r
+            .try_get::<serde_json::Value, _>("owner_emails")
+            .unwrap_or_else(|_| serde_json::json!([]));
+        let owner_emails: Vec<String> =
+            serde_json::from_value(emails_json).unwrap_or_default();
         out.push(ProfileInfo {
             profile_id: r.try_get("profile_id").map_err(|e| format!("pid: {e}"))?,
             profile_name: r.try_get("profile_name").unwrap_or_default(),
             token: r.try_get("token").map_err(|e| format!("token: {e}"))?,
-            owner_email: r.try_get("owner_email").ok().flatten(),
+            owner_emails,
             owner_username: r.try_get("owner_username").unwrap_or_default(),
         });
     }
@@ -265,52 +270,51 @@ async fn handle_notice(
         return Ok(false);
     }
 
-    // Resolve recipient. Owner's email first; admin fallback otherwise.
-    let recipient = resolve_recipient(profile, settings);
+    // Resolve recipients: owner's notify_emails list → admin fallback.
+    let recipients = resolve_recipients(profile, settings);
+    // recipient_email column is TEXT — store comma-joined for the
+    // admin panel's "已发到" display. Empty = no one to send to.
+    let recipient_display: Option<String> = if recipients.is_empty() {
+        None
+    } else {
+        Some(recipients.join(", "))
+    };
 
     // Parse upstream's date string. Tolerant — failure just nulls out
     // the column, doesn't block the email.
     let notice_date: Option<NaiveDate> =
         NaiveDate::parse_from_str(&notice.create_time, "%Y-%m-%d").ok();
 
-    let (emailed_at, send_error): (Option<DateTime<Local>>, Option<String>) = match recipient
-        .as_ref()
+    let (emailed_at, send_error): (Option<DateTime<Local>>, Option<String>) = if recipients
+        .is_empty()
     {
-        Some(addr) => {
-            // 上游 (七猫) 推下来的 content 是一段独立 HTML — 我们把它
-            // 嵌进自己的移动端友好 shell,顶部加上账号 + 通知日期的
-            // 上下文卡,让用户在手机上一眼就知道是哪个 profile。
-            let date_str = notice_date
-                .map(|d| d.format("%Y-%m-%d").to_string())
-                .unwrap_or_else(|| "—".to_string());
-            let secondary = format!(
-                "账号:{} · 通知日期:{}",
-                profile.profile_name, date_str
-            );
-            let body = email_shell(
+        (None, Some("no recipient (owner notify_emails empty + no admin fallback)".into()))
+    } else {
+        // 上游 (七猫) 推下来的 content 是一段独立 HTML — 我们把它
+        // 嵌进自己的移动端友好 shell,顶部加上账号 + 通知日期的
+        // 上下文卡,让用户在手机上一眼就知道是哪个 profile。
+        let date_str = notice_date
+            .map(|d| d.format("%Y-%m-%d").to_string())
+            .unwrap_or_else(|| "—".to_string());
+        let secondary = format!(
+            "账号:{} · 通知日期:{}",
+            profile.profile_name, date_str
+        );
+        let body = email_shell(
+            &notice.title,
+            Some(&secondary),
+            &notice_card(
                 &notice.title,
-                Some(&secondary),
-                &notice_card(
-                    &notice.title,
-                    Some("以下为七猫达人推送的原始通知"),
-                    &notice.content,
-                ),
-                Some("收到这封邮件意味着你的本月七猫达人收益已结算"),
-            );
+                Some("以下为七猫达人推送的原始通知"),
+                &notice.content,
+            ),
+            Some("收到这封邮件意味着你的本月七猫达人收益已结算"),
+        );
 
-            match email_sender::send_html(
-                settings,
-                std::slice::from_ref(addr),
-                &notice.title,
-                &body,
-            )
-            .await
-            {
-                Ok(()) => (Some(Local::now()), None),
-                Err(e) => (None, Some(format!("smtp: {e}"))),
-            }
+        match email_sender::send_html(settings, &recipients, &notice.title, &body).await {
+            Ok(()) => (Some(Local::now()), None),
+            Err(e) => (None, Some(format!("smtp: {e}"))),
         }
-        None => (None, Some("no recipient (owner email empty + no admin fallback)".into())),
     };
 
     sqlx::query(
@@ -325,7 +329,7 @@ async fn handle_notice(
     .bind(&notice.title)
     .bind(&notice.content)
     .bind(notice_date)
-    .bind(&recipient)
+    .bind(&recipient_display)
     .bind(emailed_at)
     .bind(&send_error)
     .execute(pool)
@@ -351,19 +355,19 @@ async fn handle_notice(
     Ok(true)
 }
 
-/// Pick the email destination. Order: owner's `users.email` → admin
-/// `email_settings.recipients[0]` → None (logged + persisted as
-/// `send_error`).
-fn resolve_recipient(profile: &ProfileInfo, settings: &EmailSettings) -> Option<String> {
-    if let Some(addr) = profile
-        .owner_email
-        .as_ref()
+/// Resolve email recipients: owner's full `notify_emails` list →
+/// `email_settings.recipients` (admin fallback) → empty list.
+/// Empty = no one to email; caller persists `send_error` for that case.
+fn resolve_recipients(profile: &ProfileInfo, settings: &EmailSettings) -> Vec<String> {
+    if !profile.owner_emails.is_empty() {
+        return profile.owner_emails.clone();
+    }
+    settings
+        .recipients
+        .iter()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
-    {
-        return Some(addr);
-    }
-    settings.recipients.first().cloned()
+        .collect()
 }
 
 /// Send ONE consolidated digest to all admin recipients summarizing

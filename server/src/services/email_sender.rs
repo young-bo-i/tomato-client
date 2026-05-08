@@ -123,10 +123,12 @@ pub async fn resolve_admin_recipients(
     pool: &DbPool,
     settings: &EmailSettings,
 ) -> Vec<String> {
-    let admin_rows: Vec<Option<String>> = sqlx::query_scalar(
-        r#"SELECT email FROM users
+    // Each admin user can configure multiple notify emails (JSONB array
+    // since migration 003). We flatten across all admins, then UNION with
+    // the legacy email_settings.recipients list.
+    let admin_jsons: Vec<serde_json::Value> = sqlx::query_scalar(
+        r#"SELECT notify_emails FROM users
            WHERE role = 'admin' AND is_active = TRUE
-             AND email IS NOT NULL AND email <> ''
            ORDER BY id"#,
     )
     .fetch_all(pool)
@@ -134,10 +136,14 @@ pub async fn resolve_admin_recipients(
     .unwrap_or_default();
 
     let mut set: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
-    for e in admin_rows.into_iter().flatten() {
-        let t = e.trim().to_string();
-        if !t.is_empty() {
-            set.insert(t);
+    for j in admin_jsons {
+        if let Ok(list) = serde_json::from_value::<Vec<String>>(j) {
+            for e in list {
+                let t = e.trim().to_string();
+                if !t.is_empty() {
+                    set.insert(t);
+                }
+            }
         }
     }
     for e in &settings.recipients {

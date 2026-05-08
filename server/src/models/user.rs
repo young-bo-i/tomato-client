@@ -34,9 +34,12 @@ pub struct User {
     pub password_hash: String,
     pub role: String,
     pub is_active: bool,
-    /// Notification destination for offline alerts. Nullable — admins
-    /// without an email are silently skipped by the dispatcher.
-    pub email: Option<String>,
+    /// 收件邮箱列表(数组,可以是空)。每条通知会同时发给数组里的
+    /// 所有地址。空数组意味着"不接收任何通知"——dispatcher 会跳过。
+    /// 管理员的多个邮箱也会被 `email_sender::resolve_admin_recipients`
+    /// 聚合进 `[管理员速览]` 抄送列表。
+    #[sqlx(json)]
+    pub notify_emails: Vec<String>,
     /// 2-level user hierarchy (introduced in migration 003):
     ///   * NULL  → tier-1 (top-level user, or admin)
     ///   * NOT NULL → tier-2; references the tier-1 above this user
@@ -61,7 +64,8 @@ pub struct UserView {
     pub username: String,
     pub role: String,
     pub is_active: bool,
-    pub email: Option<String>,
+    /// 收件邮箱数组(详见 `User::notify_emails`)。
+    pub notify_emails: Vec<String>,
     pub parent_user_id: Option<i32>,
     /// Username of the parent (when this row is tier-2). Filled in by
     /// the admin list query via LEFT JOIN; None for tier-1.
@@ -83,7 +87,7 @@ impl From<User> for UserView {
             username: u.username,
             role: u.role,
             is_active: u.is_active,
-            email: u.email,
+            notify_emails: u.notify_emails,
             parent_user_id: u.parent_user_id,
             parent_username: None,
             tier2_contribution_pct: u.tier2_contribution_pct,
@@ -92,4 +96,30 @@ impl From<User> for UserView {
             updated_at: u.updated_at,
         }
     }
+}
+
+/// 校验 + 规范化前端传过来的邮箱数组:trim、去空字符串、去重(保序),
+/// 拒绝明显格式错的(必须包含 `@` 且 `@` 后面有 `.`)。返回 BadRequest
+/// 错误描述的字符串(handler 自己包成 AppError),不返回错误就是规范化
+/// 后的列表。空列表合法 (= "我不接收任何通知")。
+pub fn normalize_notify_emails(raw: &[String]) -> Result<Vec<String>, String> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut out = Vec::with_capacity(raw.len());
+    for s in raw {
+        let t = s.trim();
+        if t.is_empty() {
+            continue;
+        }
+        // 极简邮箱校验:必须含 @,且 @ 后面有点。不严格校验所有 RFC,
+        // SMTP 服务器最终会兜底拒绝明显错的。
+        let parts: Vec<&str> = t.splitn(2, '@').collect();
+        if parts.len() != 2 || parts[0].is_empty() || !parts[1].contains('.') {
+            return Err(format!("非法邮箱地址:{t}"));
+        }
+        let lower = t.to_string();
+        if seen.insert(lower.clone()) {
+            out.push(lower);
+        }
+    }
+    Ok(out)
 }

@@ -270,22 +270,23 @@ struct ProfileWithCookie {
     profile_id: Uuid,
     profile_name: String,
     cookie_header: Arc<str>,
-    /// Owner's `users.email`. None / empty means "fall back to admin
-    /// `email_settings.recipients[0]`" at email-send time.
-    owner_email: Option<String>,
+    /// Owner's `users.notify_emails` array. Empty list means "owner has
+    /// no notify configured"; the email step then falls back to
+    /// `email_settings.recipients` (admin fallback).
+    owner_emails: Vec<String>,
     owner_username: String,
 }
 
 /// Pull all online tomato cookies + the metadata used by the email
 /// step. Same predicate as `tomato_cookie::pick_cookie` (any active
 /// user, not just admin) but JOINs in `browser_profiles.name` +
-/// `users.email`/`users.username`.
+/// `users.notify_emails`/`users.username`.
 async fn list_online_tomato_profiles(pool: &DbPool) -> Result<Vec<ProfileWithCookie>, String> {
     let rows = sqlx::query(
         r#"SELECT pkc.profile_id, pkc.cookies,
-                  bp.name        AS profile_name,
-                  u.email        AS owner_email,
-                  u.username     AS owner_username
+                  bp.name           AS profile_name,
+                  u.notify_emails   AS owner_emails,
+                  u.username        AS owner_username
            FROM platform_kol_cookies pkc
            JOIN browser_profiles bp ON bp.id = pkc.profile_id
            JOIN users u             ON u.id = bp.user_id
@@ -310,11 +311,16 @@ async fn list_online_tomato_profiles(pool: &DbPool) -> Result<Vec<ProfileWithCoo
             Some(h) => h,
             None => continue,
         };
+        let emails_json: JsonValue = r
+            .try_get::<JsonValue, _>("owner_emails")
+            .unwrap_or_else(|_| serde_json::json!([]));
+        let owner_emails: Vec<String> =
+            serde_json::from_value(emails_json).unwrap_or_default();
         out.push(ProfileWithCookie {
             profile_id: pid,
             profile_name: r.try_get("profile_name").unwrap_or_default(),
             cookie_header: Arc::from(header),
-            owner_email: r.try_get("owner_email").ok().flatten(),
+            owner_emails,
             owner_username: r.try_get("owner_username").unwrap_or_default(),
         });
     }
@@ -466,29 +472,28 @@ async fn send_diff_emails(
     settings: &EmailSettings,
     emailable: &[EmailableUpdate],
 ) {
-    // Group by resolved recipient. Profiles whose owner has no email
-    // and no admin fallback get bucketed under None; we record an
-    // error on those rows but don't try to send.
-    let mut by_recipient: HashMap<Option<String>, Vec<&EmailableUpdate>> = HashMap::new();
+    // 按收件人列表分组。每个 profile 的所有者可能有 N 个 notify_emails,
+    // 同一所有者的多个 profile 共享同一收件人列表 → 合并成一封 digest。
+    // 空列表(owner 没配 + 无 admin fallback)单独存,用 mark_email_error
+    // 留痕,不真去发。
+    let mut by_recipients: HashMap<Vec<String>, Vec<&EmailableUpdate>> = HashMap::new();
     for u in emailable {
-        let recipient = resolve_recipient(&u.profile, settings);
-        by_recipient.entry(recipient).or_default().push(u);
+        let recipients = resolve_recipients(&u.profile, settings);
+        by_recipients.entry(recipients).or_default().push(u);
     }
 
-    for (recipient, items) in by_recipient {
+    for (recipients, items) in by_recipients {
         let profile_ids: Vec<Uuid> = items.iter().map(|u| u.profile.profile_id).collect();
 
-        let Some(addr) = recipient else {
-            // Bucket with no resolvable email — persist error so admin
-            // panel surfaces it; nothing to try.
+        if recipients.is_empty() {
             mark_email_error(
                 pool,
                 &profile_ids,
-                "no recipient (owner email empty + no admin fallback)",
+                "no recipient (owner notify_emails empty + no admin fallback)",
             )
             .await;
             continue;
-        };
+        }
 
         let total_diff: i64 = items.iter().map(|u| u.diff).sum();
         let subject = format!(
@@ -498,11 +503,11 @@ async fn send_diff_emails(
         );
         let body = render_diff_email_body(&items);
 
-        match email_sender::send_html(settings, &[addr.clone()], &subject, &body).await {
+        match email_sender::send_html(settings, &recipients, &subject, &body).await {
             Ok(()) => {
                 tracing::info!(
-                    "tomato_income: emailed {} → {} accounts, +{}",
-                    addr,
+                    "tomato_income: emailed {} address(es) → {} accounts, +{}",
+                    recipients.len(),
                     items.len(),
                     fmt_yuan(total_diff)
                 );
@@ -510,8 +515,8 @@ async fn send_diff_emails(
             }
             Err(e) => {
                 tracing::warn!(
-                    "tomato_income: email send → {} failed: {e}",
-                    addr
+                    "tomato_income: email send → {:?} failed: {e}",
+                    recipients
                 );
                 mark_email_error(pool, &profile_ids, &format!("smtp: {e}")).await;
             }
@@ -519,17 +524,18 @@ async fn send_diff_emails(
     }
 }
 
-/// Owner.email → `email_settings.recipients[0]` → None.
-fn resolve_recipient(profile: &ProfileWithCookie, settings: &EmailSettings) -> Option<String> {
-    if let Some(addr) = profile
-        .owner_email
-        .as_ref()
+/// Owner's `notify_emails` (full list, not just first) → `email_settings.recipients`
+/// (admin fallback) → empty Vec. Empty means "no one to email", caller marks error.
+fn resolve_recipients(profile: &ProfileWithCookie, settings: &EmailSettings) -> Vec<String> {
+    if !profile.owner_emails.is_empty() {
+        return profile.owner_emails.clone();
+    }
+    settings
+        .recipients
+        .iter()
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
-    {
-        return Some(addr);
-    }
-    settings.recipients.first().cloned()
+        .collect()
 }
 
 async fn mark_emailed_ok(pool: &DbPool, profile_ids: &[Uuid]) {

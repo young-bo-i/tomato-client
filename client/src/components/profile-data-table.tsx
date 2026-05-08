@@ -72,7 +72,6 @@ import { useTeamLocks } from "@/hooks/use-team-locks";
 import { useVpnEvents } from "@/hooks/use-vpn-events";
 import {
   getBrowserDisplayName,
-  getCurrentOS,
   getOSDisplayName,
   getProfileIcon,
   isCrossOsProfile,
@@ -2580,14 +2579,16 @@ export function ProfilesDataTable({
     meta: tableMeta,
   });
 
-  const platform = getCurrentOS();
-
+  // 之前固定 macOS 340px / 其它 280px,导致大屏窗口下表格只占上半截、
+  // 下方一大片空白。改用 flex-1 + min-h-0 让它撑满父容器(page.tsx 里
+  // 已经是 `flex-1 min-h-0 flex flex-col`)。min-h 留个 fallback 防止
+  // 父级 flex 链断掉时整个表格塌缩成 0 高度。
   return (
     <>
       <ScrollArea
         className={cn(
-          "rounded-md border [&>div[data-slot='scroll-area-viewport']>div]:overflow-visible",
-          platform === "macos" ? "h-[340px]" : "h-[280px]",
+          "rounded-md border flex-1 min-h-[280px]",
+          "[&>div[data-slot='scroll-area-viewport']>div]:overflow-visible",
         )}
       >
         <Table className="overflow-visible">

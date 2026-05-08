@@ -22,6 +22,7 @@ use crate::auth::password;
 use crate::auth::AuthUser;
 use crate::db::DbPool;
 use crate::errors::{AppError, AppResult};
+use crate::models::user::normalize_notify_emails;
 
 /// Allowed buckets — same set as admin_contribution_pct so the UX is
 /// consistent. Centralized at the API layer because the DB CHECK is
@@ -141,6 +142,42 @@ pub async fn change_my_password(
         .await?;
 
     Ok(HttpResponse::Ok().json(serde_json::json!({ "ok": true })))
+}
+
+/// `PUT /api/users/me/notify_emails` — caller updates their own
+/// notification email list. Body is the FULL replacement list (we
+/// don't do per-item add/delete to keep the contract simple).
+/// Empty array is valid and means "stop sending me notifications".
+#[derive(Debug, Deserialize)]
+pub struct UpdateNotifyEmailsBody {
+    pub notify_emails: Vec<String>,
+}
+
+pub async fn update_my_notify_emails(
+    pool: web::Data<DbPool>,
+    user: AuthUser,
+    body: web::Json<UpdateNotifyEmailsBody>,
+) -> AppResult<HttpResponse> {
+    let normalized = normalize_notify_emails(&body.into_inner().notify_emails)
+        .map_err(AppError::BadRequest)?;
+    let json = serde_json::to_value(&normalized)
+        .map_err(|e| AppError::Internal(format!("encode notify_emails: {e}")))?;
+
+    let updated = sqlx::query(
+        r#"UPDATE users SET notify_emails = $1 WHERE id = $2"#,
+    )
+    .bind(&json)
+    .bind(user.0.sub)
+    .execute(pool.get_ref())
+    .await?
+    .rows_affected();
+    if updated == 0 {
+        return Err(AppError::NotFound(format!("user {}", user.0.sub)));
+    }
+    Ok(HttpResponse::Ok().json(serde_json::json!({
+        "ok": true,
+        "notify_emails": normalized,
+    })))
 }
 
 /// One row in the "my subordinates" list. Minimal projection — no

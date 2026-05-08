@@ -29,6 +29,7 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useKolAdminUsers } from "../hooks/use-kol-admin-users";
+import { KolEmailListEditor } from "./kol-email-list-editor";
 import type {
   CreateUserRequest,
   Role,
@@ -164,10 +165,25 @@ export function KolAdminPanel({ currentUserId }: Props) {
                       </Badge>
                     </TableCell>
                     <TableCell
-                      className="text-xs text-muted-foreground max-w-[220px] truncate"
-                      title={u.email ?? undefined}
+                      className="text-xs text-muted-foreground max-w-[260px]"
+                      title={u.notify_emails.join("\n")}
                     >
-                      {u.email ?? "—"}
+                      {u.notify_emails.length === 0 ? (
+                        "—"
+                      ) : u.notify_emails.length === 1 ? (
+                        <span className="truncate inline-block max-w-full align-middle">
+                          {u.notify_emails[0]}
+                        </span>
+                      ) : (
+                        <span>
+                          <span className="truncate inline-block max-w-[180px] align-middle">
+                            {u.notify_emails[0]}
+                          </span>
+                          <span className="ml-1 text-[10px] text-muted-foreground">
+                            +{u.notify_emails.length - 1}
+                          </span>
+                        </span>
+                      )}
                     </TableCell>
                     <TableCell className="text-xs text-muted-foreground">
                       {new Date(u.created_at).toLocaleString()}
@@ -296,7 +312,7 @@ function CreateUserDialog({
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [role, setRole] = useState<Role>("user");
-  const [email, setEmail] = useState("");
+  const [notifyEmails, setNotifyEmails] = useState<string[]>([]);
   const [parentId, setParentId] = useState<string>(NO_PARENT);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -317,20 +333,19 @@ function CreateUserDialog({
     setSubmitting(true);
     setError(null);
     try {
-      const trimmedEmail = email.trim();
       const parent_user_id =
         role === "user" && parentId !== NO_PARENT ? Number(parentId) : null;
       await onSubmit({
         username: username.trim(),
         password,
         role,
-        email: trimmedEmail.length > 0 ? trimmedEmail : null,
+        notify_emails: notifyEmails,
         parent_user_id,
       });
       setUsername("");
       setPassword("");
       setRole("user");
-      setEmail("");
+      setNotifyEmails([]);
       setParentId(NO_PARENT);
       onOpenChange(false);
     } catch (e) {
@@ -399,12 +414,11 @@ function CreateUserDialog({
             </div>
           )}
           <div className="space-y-2">
-            <Label>通知邮箱(可选)</Label>
-            <Input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="收到掉线告警的邮箱"
+            <Label>通知邮箱(可选,可填多个)</Label>
+            <KolEmailListEditor
+              value={notifyEmails}
+              onChange={setNotifyEmails}
+              disabled={submitting}
             />
           </div>
           {error && <p className="text-sm text-destructive">{error}</p>}
@@ -453,7 +467,7 @@ function EditUserDialog({
   const [password, setPassword] = useState("");
   const [role, setRole] = useState<Role>("user");
   const [isActive, setIsActive] = useState(true);
-  const [email, setEmail] = useState("");
+  const [notifyEmails, setNotifyEmails] = useState<string[]>([]);
   const [parentId, setParentId] = useState<string>(NO_PARENT);
   const [tier2Pct, setTier2Pct] = useState<number>(0);
   const [submitting, setSubmitting] = useState(false);
@@ -465,7 +479,7 @@ function EditUserDialog({
     setPassword("");
     setRole(user.role);
     setIsActive(user.is_active);
-    setEmail(user.email ?? "");
+    setNotifyEmails(user.notify_emails);
     setParentId(
       user.parent_user_id !== null ? String(user.parent_user_id) : NO_PARENT,
     );
@@ -497,11 +511,12 @@ function EditUserDialog({
     }
     if (role !== user.role) patch.role = role;
     if (isActive !== user.is_active) patch.is_active = isActive;
-    // Email tri-state: null clears, non-empty sets, no change → omit.
-    const trimmedEmail = email.trim();
-    const currentEmail = user.email ?? "";
-    if (trimmedEmail !== currentEmail) {
-      patch.email = trimmedEmail.length > 0 ? trimmedEmail : null;
+    // notify_emails: 整体替换 (server normalizes)。比较 = 长度 + 顺序。
+    const emailsChanged =
+      notifyEmails.length !== user.notify_emails.length ||
+      notifyEmails.some((e, i) => e !== user.notify_emails[i]);
+    if (emailsChanged) {
+      patch.notify_emails = notifyEmails;
     }
     // parent_user_id tri-state.
     const currentParent =
@@ -657,12 +672,11 @@ function EditUserDialog({
             </Label>
           </div>
           <div className="space-y-2">
-            <Label>通知邮箱(留空则清空)</Label>
-            <Input
-              type="email"
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="收到掉线告警的邮箱"
+            <Label>通知邮箱(可填多个)</Label>
+            <KolEmailListEditor
+              value={notifyEmails}
+              onChange={setNotifyEmails}
+              disabled={submitting}
             />
           </div>
           {error && <p className="text-sm text-destructive">{error}</p>}

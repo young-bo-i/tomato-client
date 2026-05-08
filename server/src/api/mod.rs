@@ -44,6 +44,10 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
                         web::put().to(users_self::change_my_password),
                     )
                     .route(
+                        "/notify_emails",
+                        web::put().to(users_self::update_my_notify_emails),
+                    )
+                    .route(
                         "/kol_config",
                         web::get().to(admin_kol_config::list_mine),
                     )

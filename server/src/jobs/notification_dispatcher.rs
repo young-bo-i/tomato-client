@@ -101,10 +101,11 @@ async fn dispatch_round(pool: &DbPool) -> Result<usize, String> {
     Ok(sent)
 }
 
-/// Collected offline rows for one user, plus their notification address.
+/// Collected offline rows for one user, plus their notification addresses.
+/// Empty `notify_emails` means the user opted out — caller skips email send.
 struct UserOfflineGroup {
     username: String,
-    email: Option<String>,
+    notify_emails: Vec<String>,
     rows: Vec<OfflineRow>,
 }
 
@@ -118,7 +119,7 @@ async fn collect_offline_groups(
 
     // Cookie offlines (covers both tomato and qimao platform rows).
     let cookie_rows = sqlx::query(
-        r#"SELECT bp.user_id, u.username, u.email,
+        r#"SELECT bp.user_id, u.username, u.notify_emails,
                   pkc.profile_id, bp.name AS profile_name,
                   pkc.platform, pkc.domain,
                   pkc.last_offline_at, pkc.offline_reason,
@@ -137,7 +138,11 @@ async fn collect_offline_groups(
     for r in cookie_rows {
         let uid: i32 = r.try_get("user_id").map_err(|e| format!("user_id col: {e}"))?;
         let username: String = r.try_get("username").unwrap_or_default();
-        let email: Option<String> = r.try_get("email").unwrap_or(None);
+        let emails_json: serde_json::Value = r
+            .try_get::<serde_json::Value, _>("notify_emails")
+            .unwrap_or_else(|_| serde_json::json!([]));
+        let notify_emails: Vec<String> =
+            serde_json::from_value(emails_json).unwrap_or_default();
         let platform: String = r.try_get("platform").unwrap_or_default();
         let domain: String = r.try_get("domain").unwrap_or_default();
         let kind = match platform.as_str() {
@@ -149,7 +154,7 @@ async fn collect_offline_groups(
             r.try_get("offline_notified_at").unwrap_or(None);
         let entry = groups.entry(uid).or_insert(UserOfflineGroup {
             username,
-            email,
+            notify_emails,
             rows: Vec::new(),
         });
         entry.rows.push(OfflineRow {
@@ -166,7 +171,7 @@ async fn collect_offline_groups(
 
     // Douyin profile offlines.
     let douyin_rows = sqlx::query(
-        r#"SELECT bp.user_id, u.username, u.email,
+        r#"SELECT bp.user_id, u.username, u.notify_emails,
                   bp.id AS profile_id, bp.name AS profile_name,
                   bp.douyin_login_state_updated_at,
                   bp.douyin_login_state_url,
@@ -185,12 +190,16 @@ async fn collect_offline_groups(
     for r in douyin_rows {
         let uid: i32 = r.try_get("user_id").map_err(|e| format!("user_id col: {e}"))?;
         let username: String = r.try_get("username").unwrap_or_default();
-        let email: Option<String> = r.try_get("email").unwrap_or(None);
+        let emails_json: serde_json::Value = r
+            .try_get::<serde_json::Value, _>("notify_emails")
+            .unwrap_or_else(|_| serde_json::json!([]));
+        let notify_emails: Vec<String> =
+            serde_json::from_value(emails_json).unwrap_or_default();
         let notified_at: Option<DateTime<Local>> =
             r.try_get("douyin_offline_notified_at").unwrap_or(None);
         let entry = groups.entry(uid).or_insert(UserOfflineGroup {
             username,
-            email,
+            notify_emails,
             rows: Vec::new(),
         });
         entry.rows.push(OfflineRow {
@@ -246,13 +255,13 @@ async fn handle_user_with_data(
     user_id: i32,
     group: UserOfflineGroup,
 ) -> Result<bool, String> {
-    let UserOfflineGroup { username, email, rows } = group;
-    let Some(email) = email.filter(|e| !e.trim().is_empty()) else {
+    let UserOfflineGroup { username, notify_emails, rows } = group;
+    if notify_emails.is_empty() {
         tracing::debug!(
-            "notification_dispatcher: user {user_id} ({username}) has no email, skip"
+            "notification_dispatcher: user {user_id} ({username}) has no notify_emails configured, skip"
         );
         return Ok(false);
-    };
+    }
     if rows.is_empty() || !rows.iter().any(|r| r.is_new) {
         // Caller already filtered users_with_fresh, but defensive check.
         return Ok(false);
@@ -261,14 +270,17 @@ async fn handle_user_with_data(
     let subject = format!("Tomato KOL · 账号掉线提醒 ({} 个)", rows.len());
     let body = render_body_html(&username, &rows);
 
-    email_sender::send_html(settings, &[email.clone()], &subject, &body)
+    // 一封邮件多收件人 — lettre 自动加多个 To:。SMTP 服务商若有 Bcc 偏好
+    // 可以以后再调,目前 To: 暴露最直观。
+    email_sender::send_html(settings, &notify_emails, &subject, &body)
         .await
-        .map_err(|e| format!("smtp send to {email}: {e}"))?;
+        .map_err(|e| format!("smtp send to {:?}: {e}", notify_emails))?;
 
     stamp_notified(pool, &rows).await?;
 
     tracing::info!(
-        "notification_dispatcher: emailed user {user_id} ({username}) → {email} · {} offline row(s)",
+        "notification_dispatcher: emailed user {user_id} ({username}) → {} address(es) · {} offline row(s)",
+        notify_emails.len(),
         rows.len()
     );
     Ok(true)

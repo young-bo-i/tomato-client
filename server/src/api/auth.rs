@@ -24,7 +24,8 @@ pub struct LoginResponse {
 /// and EXISTS-test for subordinates so the UI can render team UI
 /// conditionally without a follow-up request.
 const SELECT_USER_WITH_TIER: &str = r#"
-    SELECT u.id, u.username, u.password_hash, u.role, u.is_active, u.email,
+    SELECT u.id, u.username, u.password_hash, u.role, u.is_active,
+           u.notify_emails,
            u.parent_user_id, u.tier2_contribution_pct,
            u.created_at, u.updated_at,
            p.username AS parent_username,
@@ -45,13 +46,18 @@ async fn fetch_user_view(pool: &DbPool, user_id: i32) -> AppResult<UserView> {
         .await?
         .ok_or(AppError::Unauthorized)?;
 
+    let notify_emails_json: serde_json::Value = row
+        .try_get::<serde_json::Value, _>("notify_emails")
+        .unwrap_or_else(|_| serde_json::json!([]));
+    let notify_emails: Vec<String> =
+        serde_json::from_value(notify_emails_json).unwrap_or_default();
     let user = User {
         id: row.try_get("id")?,
         username: row.try_get("username")?,
         password_hash: row.try_get("password_hash")?,
         role: row.try_get("role")?,
         is_active: row.try_get("is_active")?,
-        email: row.try_get("email").ok(),
+        notify_emails,
         parent_user_id: row.try_get("parent_user_id").ok(),
         tier2_contribution_pct: row.try_get("tier2_contribution_pct").unwrap_or(0),
         created_at: row.try_get("created_at")?,

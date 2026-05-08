@@ -6,7 +6,7 @@ use crate::auth::password;
 use crate::auth::AdminUser;
 use crate::db::DbPool;
 use crate::errors::{AppError, AppResult};
-use crate::models::user::{Role, User, UserView};
+use crate::models::user::{normalize_notify_emails, Role, User, UserView};
 
 /// Allowed buckets for `tier2_contribution_pct`. Same set the global
 /// admin contribution accepts; centralized at the API layer because
@@ -18,10 +18,11 @@ pub struct CreateUserRequest {
     pub username: String,
     pub password: String,
     pub role: Role,
-    /// Optional notification email. Used as the destination when this
-    /// user's profiles go offline.
+    /// 收件邮箱数组(可空)。每条通知发送给数组里的所有地址。
+    /// 服务端做基础格式校验 + 去重 + trim,详见
+    /// `models::user::normalize_notify_emails`。
     #[serde(default)]
-    pub email: Option<String>,
+    pub notify_emails: Vec<String>,
     /// Optional parent (creates this row as a tier-2 user). Must point
     /// at an existing tier-1 non-admin user; admins cannot have a
     /// parent. Validated server-side.
@@ -34,10 +35,10 @@ pub struct UpdateUserRequest {
     pub password: Option<String>,
     pub role: Option<Role>,
     pub is_active: Option<bool>,
-    /// `Option<Option<String>>` distinguishes "leave alone" (omit) from
-    /// "explicitly clear" (`null`). Empty string also clears.
+    /// `None` (字段省略) 表示不改;`Some([])` 清空收件人;`Some([...])`
+    /// 替换为新数组。规范化 + 校验同 create。
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub email: Option<Option<String>>,
+    pub notify_emails: Option<Vec<String>>,
     /// Tri-state: `None` (omit) preserves; `Some(None)` clears (promotes
     /// tier-2 → tier-1); `Some(Some(id))` reassigns to a different
     /// parent.
@@ -54,7 +55,8 @@ pub async fn list(pool: web::Data<DbPool>, _: AdminUser) -> AppResult<HttpRespon
     // has_subordinates EXISTS test so the admin UI can render tier
     // badges without N follow-up queries.
     let rows = sqlx::query(
-        r#"SELECT u.id, u.username, u.password_hash, u.role, u.is_active, u.email,
+        r#"SELECT u.id, u.username, u.password_hash, u.role, u.is_active,
+                  u.notify_emails,
                   u.parent_user_id, u.tier2_contribution_pct,
                   u.created_at, u.updated_at,
                   p.username AS parent_username,
@@ -68,13 +70,19 @@ pub async fn list(pool: web::Data<DbPool>, _: AdminUser) -> AppResult<HttpRespon
 
     let mut views: Vec<UserView> = Vec::with_capacity(rows.len());
     for r in rows {
+        // notify_emails 是 JSONB array,直接用 sqlx 的 json 解码读出。
+        let notify_emails_json: serde_json::Value = r
+            .try_get::<serde_json::Value, _>("notify_emails")
+            .unwrap_or_else(|_| serde_json::json!([]));
+        let notify_emails: Vec<String> = serde_json::from_value(notify_emails_json)
+            .unwrap_or_default();
         let user = User {
             id: r.try_get("id")?,
             username: r.try_get("username")?,
             password_hash: r.try_get("password_hash")?,
             role: r.try_get("role")?,
             is_active: r.try_get("is_active")?,
-            email: r.try_get("email").ok(),
+            notify_emails,
             parent_user_id: r.try_get("parent_user_id").ok(),
             tier2_contribution_pct: r.try_get("tier2_contribution_pct").unwrap_or(0),
             created_at: r.try_get("created_at")?,
@@ -119,23 +127,22 @@ pub async fn create(
 
     let hash = password::hash(&body.password).map_err(AppError::Internal)?;
 
-    let email_normalized = body
-        .email
-        .as_ref()
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty());
+    let notify_emails =
+        normalize_notify_emails(&body.notify_emails).map_err(AppError::BadRequest)?;
+    let notify_emails_json = serde_json::to_value(&notify_emails)
+        .map_err(|e| AppError::Internal(format!("encode notify_emails: {e}")))?;
 
     let result = sqlx::query_as::<_, User>(
-        r#"INSERT INTO users (username, password_hash, role, is_active, email, parent_user_id)
+        r#"INSERT INTO users (username, password_hash, role, is_active, notify_emails, parent_user_id)
            VALUES ($1, $2, $3, TRUE, $4, $5)
-           RETURNING id, username, password_hash, role, is_active, email,
+           RETURNING id, username, password_hash, role, is_active, notify_emails,
                      parent_user_id, tier2_contribution_pct,
                      created_at, updated_at"#,
     )
     .bind(body.username.trim())
     .bind(&hash)
     .bind(body.role.as_str())
-    .bind(&email_normalized)
+    .bind(&notify_emails_json)
     .bind(body.parent_user_id)
     .fetch_one(pool.get_ref())
     .await;
@@ -209,7 +216,7 @@ pub async fn update(
     if body.password.is_none()
         && body.role.is_none()
         && body.is_active.is_none()
-        && body.email.is_none()
+        && body.notify_emails.is_none()
         && body.parent_user_id.is_none()
         && body.tier2_contribution_pct.is_none()
     {
@@ -224,24 +231,20 @@ pub async fn update(
         None => None,
     };
 
-    // Tri-state for email:
-    //   * None         → leave alone (field omitted)
-    //   * Some(None)   → clear (`null` in JSON)
-    //   * Some(Some(s)) with empty trim → also clear
-    //   * Some(Some(s)) with content    → set
-    // SQL needs a single bind, so use a (touch_email, value) pair.
-    let (touch_email, email_value): (bool, Option<String>) = match &body.email {
-        None => (false, None),
-        Some(None) => (true, None),
-        Some(Some(s)) => {
-            let t = s.trim().to_string();
-            if t.is_empty() {
-                (true, None)
-            } else {
-                (true, Some(t))
+    // notify_emails 二元状态:None = 不改;Some([...]) = 整体替换。
+    // 空数组合法,表示"清空所有收件人"。
+    let (touch_emails, emails_json): (bool, Option<serde_json::Value>) =
+        match &body.notify_emails {
+            None => (false, None),
+            Some(list) => {
+                let normalized =
+                    normalize_notify_emails(list).map_err(AppError::BadRequest)?;
+                let json = serde_json::to_value(&normalized).map_err(|e| {
+                    AppError::Internal(format!("encode notify_emails: {e}"))
+                })?;
+                (true, Some(json))
             }
-        }
-    };
+        };
 
     // Parent assignment uses the same tri-state semantics. If we're
     // touching it, run the full validator chain:
@@ -327,19 +330,19 @@ pub async fn update(
              password_hash          = COALESCE($1, password_hash),
              role                   = COALESCE($2, role),
              is_active              = COALESCE($3, is_active),
-             email                  = CASE WHEN $4 THEN $5 ELSE email END,
+             notify_emails          = CASE WHEN $4 THEN $5 ELSE notify_emails END,
              parent_user_id         = CASE WHEN $6 THEN $7 ELSE parent_user_id END,
              tier2_contribution_pct = COALESCE($8, tier2_contribution_pct)
            WHERE id = $9
-           RETURNING id, username, password_hash, role, is_active, email,
+           RETURNING id, username, password_hash, role, is_active, notify_emails,
                      parent_user_id, tier2_contribution_pct,
                      created_at, updated_at"#,
     )
     .bind(pw_hash)
     .bind(body.role.map(|r| r.as_str()))
     .bind(body.is_active)
-    .bind(touch_email)
-    .bind(&email_value)
+    .bind(touch_emails)
+    .bind(&emails_json)
     .bind(touch_parent)
     .bind(parent_value)
     .bind(body.tier2_contribution_pct)
