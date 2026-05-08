@@ -1,10 +1,2 @@
-pub mod account;
-pub mod kol_account;
-pub mod douyin_account;
-pub mod brush_task;
-pub mod book;
-pub mod common_setting;
-pub mod invite_code;
-pub mod income;
-pub mod profile;
-pub mod submit_stats;
+pub mod browser_profile;
+pub mod user;

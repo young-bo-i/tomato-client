@@ -30,9 +30,9 @@ import { SettingsDialog } from "@/components/settings-dialog";
 import { SyncAllDialog } from "@/components/sync-all-dialog";
 import { SyncConfigDialog } from "@/components/sync-config-dialog";
 import { SyncFollowerDialog } from "@/components/sync-follower-dialog";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { WayfernTermsDialog } from "@/components/wayfern-terms-dialog";
 import { WindowResizeWarningDialog } from "@/components/window-resize-warning-dialog";
-import { KolDialog } from "@/kol/components/kol-dialog";
 import { useAppUpdateNotifications } from "@/hooks/use-app-update-notifications";
 import { useCloudAuth } from "@/hooks/use-cloud-auth";
 import { useCommercialTrial } from "@/hooks/use-commercial-trial";
@@ -46,6 +46,9 @@ import { useUpdateNotifications } from "@/hooks/use-update-notifications";
 import { useVersionUpdater } from "@/hooks/use-version-updater";
 import { useVpnEvents } from "@/hooks/use-vpn-events";
 import { useWayfernTerms } from "@/hooks/use-wayfern-terms";
+import { KolAdminConfigPanel } from "@/kol/components/kol-admin-config-panel";
+import { KolMainPanel } from "@/kol/components/kol-main-panel";
+import { useKolAuth } from "@/kol/hooks/use-kol-auth";
 import {
   dismissToast,
   showErrorToast,
@@ -104,11 +107,12 @@ export default function Home() {
     isLoading: termsLoading,
     checkTerms,
   } = useWayfernTerms();
-  const {
-    trialStatus,
-    hasAcknowledged: trialAcknowledged,
-    checkTrialStatus,
-  } = useCommercialTrial();
+  // Commercial trial popup is hidden (see CommercialTrialModal below); we
+  // still mount the hook so its checkTrialStatus onClose handler resolves
+  // if donutbrowser's internals expect it.
+  const { checkTrialStatus } = useCommercialTrial();
+
+  const { isAdmin: isKolAdmin } = useKolAuth();
 
   // Cloud auth for cross-OS unlock
   const { user: cloudUser } = useCloudAuth();
@@ -135,7 +139,6 @@ export default function Home() {
   const syncUnlocked = crossOsUnlocked || selfHostedSyncConfigured;
 
   const [createProfileDialogOpen, setCreateProfileDialogOpen] = useState(false);
-  const [kolDialogOpen, setKolDialogOpen] = useState(false);
   const [settingsDialogOpen, setSettingsDialogOpen] = useState(false);
   const [integrationsDialogOpen, setIntegrationsDialogOpen] = useState(false);
   const [importProfileDialogOpen, setImportProfileDialogOpen] = useState(false);
@@ -170,6 +173,7 @@ export default function Home() {
     string[]
   >([]);
   const [selectedGroupId, setSelectedGroupId] = useState<string>("default");
+  const [selectedPlatform, setSelectedPlatform] = useState<string | null>(null);
   const [selectedProfilesForGroup, setSelectedProfilesForGroup] = useState<
     string[]
   >([]);
@@ -374,41 +378,22 @@ export default function Home() {
     }
   }, [proxiesError]);
 
+  // KOL local-testing build: suppress the upstream Donut microphone /
+  // camera permission gate. The dialog is annoying for dev iteration.
+  // To restore the original Donut behavior, revert this hunk in git.
   const checkAllPermissions = useCallback(() => {
-    try {
-      // Wait for permissions to be initialized before checking
-      if (!isInitialized) {
-        return;
-      }
-
-      // Check if any permissions are not granted - prioritize missing permissions
-      if (!isMicrophoneAccessGranted) {
-        setCurrentPermissionType("microphone");
-        setPermissionDialogOpen(true);
-      } else if (!isCameraAccessGranted) {
-        setCurrentPermissionType("camera");
-        setPermissionDialogOpen(true);
-      }
-    } catch (error) {
-      console.error("Failed to check permissions:", error);
-    }
-  }, [isMicrophoneAccessGranted, isCameraAccessGranted, isInitialized]);
+    setPermissionDialogOpen(false);
+  }, []);
 
   const checkNextPermission = useCallback(() => {
-    try {
-      if (!isMicrophoneAccessGranted) {
-        setCurrentPermissionType("microphone");
-        setPermissionDialogOpen(true);
-      } else if (!isCameraAccessGranted) {
-        setCurrentPermissionType("camera");
-        setPermissionDialogOpen(true);
-      } else {
-        setPermissionDialogOpen(false);
-      }
-    } catch (error) {
-      console.error("Failed to check next permission:", error);
-    }
-  }, [isMicrophoneAccessGranted, isCameraAccessGranted]);
+    setPermissionDialogOpen(false);
+  }, []);
+  // Silence "declared but never read" lint on the now-unused upstream
+  // permission state (still imported by the hook to keep its API stable).
+  void isMicrophoneAccessGranted;
+  void isCameraAccessGranted;
+  void isInitialized;
+  void setCurrentPermissionType;
 
   const listenForUrlEvents = useCallback(async () => {
     try {
@@ -518,6 +503,9 @@ export default function Home() {
       extensionGroupId?: string;
       ephemeral?: boolean;
       dnsBlocklist?: string;
+      kolPlatform?: string;
+      qimaoIdentifier?: string;
+      qimaoCredential?: string;
     }) => {
       try {
         const profile = await invoke<BrowserProfile>(
@@ -536,6 +524,9 @@ export default function Home() {
               (selectedGroupId !== "default" ? selectedGroupId : undefined),
             ephemeral: profileData.ephemeral,
             dnsBlocklist: profileData.dnsBlocklist,
+            kolPlatform: profileData.kolPlatform,
+            qimaoIdentifier: profileData.qimaoIdentifier,
+            qimaoCredential: profileData.qimaoCredential,
           },
         );
 
@@ -1008,7 +999,17 @@ export default function Home() {
     void checkSelfHostedSync();
   }, [checkSelfHostedSync]);
 
-  // Filter data by selected group and search query
+  // Platform counts across all profiles (not affected by platform filter itself)
+  const platformCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const p of profiles) {
+      const plat = p.kol_platform ?? "";
+      if (plat) counts[plat] = (counts[plat] ?? 0) + 1;
+    }
+    return counts;
+  }, [profiles]);
+
+  // Filter data by selected group, search query, and platform
   const filteredProfiles = useMemo(() => {
     let filtered = profiles;
 
@@ -1025,85 +1026,166 @@ export default function Home() {
     if (searchQuery.trim()) {
       const query = searchQuery.toLowerCase().trim();
       filtered = filtered.filter((profile) => {
-        // Search in profile name
         if (profile.name.toLowerCase().includes(query)) return true;
-
-        // Search in note
         if (profile.note?.toLowerCase().includes(query)) return true;
-
-        // Search in tags
         if (profile.tags?.some((tag) => tag.toLowerCase().includes(query)))
           return true;
-
         return false;
       });
     }
 
+    // Filter by platform
+    if (selectedPlatform) {
+      filtered = filtered.filter(
+        (profile) => profile.kol_platform === selectedPlatform,
+      );
+    }
+
     return filtered;
-  }, [profiles, selectedGroupId, searchQuery]);
+  }, [profiles, selectedGroupId, searchQuery, selectedPlatform]);
 
   // Update loading states
   const isLoading = profilesLoading || groupsLoading || proxiesLoading;
 
   return (
-    <div className="grid items-center justify-items-center min-h-screen gap-8 font-(family-name:--font-geist-sans) bg-background">
-      <main className="flex flex-col items-center w-full max-w-3xl">
-        <div className="w-full">
-          <HomeHeader
-            onCreateProfileDialogOpen={setCreateProfileDialogOpen}
-            onGroupManagementDialogOpen={setGroupManagementDialogOpen}
-            onImportProfileDialogOpen={setImportProfileDialogOpen}
-            onProxyManagementDialogOpen={setProxyManagementDialogOpen}
-            onSettingsDialogOpen={setSettingsDialogOpen}
-            onSyncConfigDialogOpen={setSyncConfigDialogOpen}
-            onIntegrationsDialogOpen={setIntegrationsDialogOpen}
-            onExtensionManagementDialogOpen={setExtensionManagementDialogOpen}
-            onKolDialogOpen={setKolDialogOpen}
-            searchQuery={searchQuery}
-            onSearchQueryChange={setSearchQuery}
-          />
-        </div>
-        <div className="w-full mt-2.5">
-          <GroupBadges
-            selectedGroupId={selectedGroupId}
-            onGroupSelect={handleSelectGroup}
-            groups={groupsData}
-            isLoading={isLoading}
-          />
-          <ProfilesDataTable
-            profiles={filteredProfiles}
-            onLaunchProfile={launchProfile}
-            onKillProfile={handleKillProfile}
-            onCloneProfile={handleCloneProfile}
-            onDeleteProfile={handleDeleteProfile}
-            onRenameProfile={handleRenameProfile}
-            onConfigureCamoufox={handleConfigureCamoufox}
-            onCopyCookiesToProfile={handleCopyCookiesToProfile}
-            onOpenCookieManagement={handleOpenCookieManagement}
-            runningProfiles={runningProfiles}
-            isUpdating={isUpdating}
-            onDeleteSelectedProfiles={handleDeleteSelectedProfiles}
-            onAssignProfilesToGroup={handleAssignProfilesToGroup}
-            selectedGroupId={selectedGroupId}
-            selectedProfiles={selectedProfiles}
-            onSelectedProfilesChange={setSelectedProfiles}
-            onBulkDelete={handleBulkDelete}
-            onBulkGroupAssignment={handleBulkGroupAssignment}
-            onBulkProxyAssignment={handleBulkProxyAssignment}
-            onBulkCopyCookies={handleBulkCopyCookies}
-            onBulkExtensionGroupAssignment={handleBulkExtensionGroupAssignment}
-            onAssignExtensionGroup={handleAssignExtensionGroup}
-            onOpenProfileSyncDialog={handleOpenProfileSyncDialog}
-            onToggleProfileSync={handleToggleProfileSync}
-            crossOsUnlocked={crossOsUnlocked}
-            syncUnlocked={syncUnlocked}
-            getProfileSyncInfo={getProfileSyncInfo}
-            onLaunchWithSync={(profile) => {
-              setSyncLeaderProfile(profile);
-            }}
-          />
-        </div>
-      </main>
+    <div className="flex flex-col items-center h-screen pt-8 pb-8 font-(family-name:--font-geist-sans) bg-background">
+      <Tabs
+        defaultValue="browser"
+        className="flex flex-col w-full flex-1 min-h-0 max-w-screen-2xl px-6"
+      >
+        <TabsList className="self-center mb-4">
+          <TabsTrigger value="browser">浏览器配置</TabsTrigger>
+          <TabsTrigger value="kol">KOL 工作台</TabsTrigger>
+          {isKolAdmin && (
+            <TabsTrigger value="admin-config">管理员配置</TabsTrigger>
+          )}
+        </TabsList>
+        <TabsContent
+          value="browser"
+          className="flex-1 min-h-0 flex flex-col data-[state=inactive]:hidden"
+        >
+          <main className="flex flex-col items-center w-full flex-1 min-h-0">
+            <div className="w-full">
+              <HomeHeader
+                onCreateProfileDialogOpen={setCreateProfileDialogOpen}
+                onGroupManagementDialogOpen={setGroupManagementDialogOpen}
+                onImportProfileDialogOpen={setImportProfileDialogOpen}
+                onProxyManagementDialogOpen={setProxyManagementDialogOpen}
+                onSettingsDialogOpen={setSettingsDialogOpen}
+                onSyncConfigDialogOpen={setSyncConfigDialogOpen}
+                onIntegrationsDialogOpen={setIntegrationsDialogOpen}
+                onExtensionManagementDialogOpen={
+                  setExtensionManagementDialogOpen
+                }
+                searchQuery={searchQuery}
+                onSearchQueryChange={setSearchQuery}
+              />
+            </div>
+            <div className="w-full mt-2.5 flex-1 min-h-0 flex flex-col">
+              <div className="flex items-start justify-between gap-4 mb-4">
+                <div className="flex-1 min-w-0">
+                  <GroupBadges
+                    selectedGroupId={selectedGroupId}
+                    onGroupSelect={handleSelectGroup}
+                    groups={groupsData}
+                    isLoading={isLoading}
+                  />
+                </div>
+                {/* Platform filter buttons */}
+                {Object.keys(platformCounts).length > 0 && (
+                  <div className="flex gap-1.5 shrink-0 -mt-0.5">
+                    {(
+                      [
+                        { value: "tomato", label: "番茄达人" },
+                        { value: "qimao", label: "七猫达人" },
+                        { value: "douyin", label: "抖音" },
+                      ] as const
+                    )
+                      .filter(({ value }) => platformCounts[value] > 0)
+                      .map(({ value, label }) => (
+                        <button
+                          key={value}
+                          type="button"
+                          onClick={() =>
+                            setSelectedPlatform(
+                              selectedPlatform === value ? null : value,
+                            )
+                          }
+                          className={[
+                            "inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-colors border",
+                            selectedPlatform === value
+                              ? "bg-primary text-primary-foreground border-primary"
+                              : "bg-background text-muted-foreground border-border hover:border-primary/50 hover:text-foreground",
+                          ].join(" ")}
+                        >
+                          <span>{label}</span>
+                          <span
+                            className={[
+                              "px-1 rounded text-[10px]",
+                              selectedPlatform === value
+                                ? "bg-primary-foreground/20"
+                                : "bg-muted",
+                            ].join(" ")}
+                          >
+                            {platformCounts[value]}
+                          </span>
+                        </button>
+                      ))}
+                  </div>
+                )}
+              </div>
+              <ProfilesDataTable
+                profiles={filteredProfiles}
+                onLaunchProfile={launchProfile}
+                onKillProfile={handleKillProfile}
+                onCloneProfile={handleCloneProfile}
+                onDeleteProfile={handleDeleteProfile}
+                onRenameProfile={handleRenameProfile}
+                onConfigureCamoufox={handleConfigureCamoufox}
+                onCopyCookiesToProfile={handleCopyCookiesToProfile}
+                onOpenCookieManagement={handleOpenCookieManagement}
+                runningProfiles={runningProfiles}
+                isUpdating={isUpdating}
+                onDeleteSelectedProfiles={handleDeleteSelectedProfiles}
+                onAssignProfilesToGroup={handleAssignProfilesToGroup}
+                selectedGroupId={selectedGroupId}
+                selectedProfiles={selectedProfiles}
+                onSelectedProfilesChange={setSelectedProfiles}
+                onBulkDelete={handleBulkDelete}
+                onBulkGroupAssignment={handleBulkGroupAssignment}
+                onBulkProxyAssignment={handleBulkProxyAssignment}
+                onBulkCopyCookies={handleBulkCopyCookies}
+                onBulkExtensionGroupAssignment={
+                  handleBulkExtensionGroupAssignment
+                }
+                onAssignExtensionGroup={handleAssignExtensionGroup}
+                onOpenProfileSyncDialog={handleOpenProfileSyncDialog}
+                onToggleProfileSync={handleToggleProfileSync}
+                crossOsUnlocked={crossOsUnlocked}
+                syncUnlocked={syncUnlocked}
+                getProfileSyncInfo={getProfileSyncInfo}
+                onLaunchWithSync={(profile) => {
+                  setSyncLeaderProfile(profile);
+                }}
+              />
+            </div>
+          </main>
+        </TabsContent>
+        <TabsContent
+          value="kol"
+          className="flex-1 min-h-0 flex flex-col data-[state=inactive]:hidden"
+        >
+          <KolMainPanel />
+        </TabsContent>
+        {isKolAdmin && (
+          <TabsContent
+            value="admin-config"
+            className="flex-1 min-h-0 flex flex-col data-[state=inactive]:hidden"
+          >
+            <KolAdminConfigPanel />
+          </TabsContent>
+        )}
+      </Tabs>
 
       <CreateProfileDialog
         isOpen={createProfileDialogOpen}
@@ -1113,11 +1195,6 @@ export default function Home() {
         onCreateProfile={handleCreateProfile}
         selectedGroupId={selectedGroupId}
         crossOsUnlocked={crossOsUnlocked}
-      />
-
-      <KolDialog
-        open={kolDialogOpen}
-        onOpenChange={setKolDialogOpen}
       />
 
       <SettingsDialog
@@ -1322,17 +1399,9 @@ export default function Home() {
         onAccepted={checkTerms}
       />
 
-      {/* Commercial Trial Modal - shown once when trial expires (skip for paid users) */}
-      <CommercialTrialModal
-        isOpen={
-          !termsLoading &&
-          termsAccepted === true &&
-          trialStatus?.type === "Expired" &&
-          !trialAcknowledged &&
-          !crossOsUnlocked
-        }
-        onClose={checkTrialStatus}
-      />
+      {/* Commercial Trial Modal — hidden: we use the KOL account system instead
+          of Donut Cloud, so this marketing popup is not relevant to our users. */}
+      <CommercialTrialModal isOpen={false} onClose={checkTrialStatus} />
 
       {/* Launch on Login Dialog - shown on every startup until enabled or declined */}
       <LaunchOnLoginDialog

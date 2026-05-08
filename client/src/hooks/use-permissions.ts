@@ -145,23 +145,48 @@ export function usePermissions(): UsePermissionsReturn {
     initializePlatform();
   }, []);
 
-  // Set up interval checking when platform is determined
+  // Poll permission state on a slow cadence and pause when the window
+  // is hidden. The previous 500ms interval ran for the full app lifetime
+  // and amounted to ~170k Tauri invokes per day; permissions don't
+  // realistically flip more than once per session, and when they do the
+  // 5s lag is invisible to the user.
   useEffect(() => {
     if (!currentPlatform) return;
 
-    // Initial check
+    // Initial check.
     void checkPermissions();
 
-    // Set up 500ms interval for checking permissions
-    intervalRef.current = setInterval(() => {
-      void checkPermissions();
-    }, 500);
+    const PERMISSION_POLL_MS = 5000;
 
-    return () => {
+    const start = () => {
+      if (intervalRef.current) return;
+      intervalRef.current = setInterval(() => {
+        void checkPermissions();
+      }, PERMISSION_POLL_MS);
+    };
+    const stop = () => {
       if (intervalRef.current) {
         clearInterval(intervalRef.current);
         intervalRef.current = null;
       }
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") {
+        // Coming back to the tab — refresh once immediately so the UI
+        // doesn't show a stale state during the up-to-5s gap until the
+        // next interval tick.
+        void checkPermissions();
+        start();
+      } else {
+        stop();
+      }
+    };
+
+    if (document.visibilityState === "visible") start();
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibility);
+      stop();
     };
   }, [currentPlatform, checkPermissions]);
 

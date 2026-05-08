@@ -39,6 +39,7 @@ pub mod proxy_storage;
 mod settings_manager;
 pub mod sync;
 mod synchronizer;
+mod system_snapshot;
 pub mod traffic_stats;
 mod wayfern_manager;
 mod wayfern_terms;
@@ -53,7 +54,9 @@ mod daemon_spawn;
 pub mod daemon_ws;
 pub mod events;
 pub mod kol_automation;
+pub mod kol_client;
 mod mcp_server;
+pub mod state_sync;
 mod tag_manager;
 mod team_lock;
 mod version_updater;
@@ -671,7 +674,7 @@ fn update_claude_extensions_registry(
         "id": ext_id,
         "version": m.get("version").and_then(|v| v.as_str()).unwrap_or("0.0.0"),
         "hash": "",
-        "installedAt": chrono::Utc::now().to_rfc3339(),
+        "installedAt": chrono::Local::now().to_rfc3339(),
         "manifest": m,
         "signatureInfo": { "status": "unsigned" },
         "source": "local"
@@ -1207,6 +1210,11 @@ async fn generate_sample_fingerprint(
     created_by_id: None,
     created_by_email: None,
     dns_blocklist: None,
+  kol_platform: None,
+
+  qimao_identifier: None,
+
+  qimao_credential: None,
   };
 
   if browser == "camoufox" {
@@ -1312,8 +1320,12 @@ pub fn run() {
       #[allow(unused_variables)]
       let win_builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::default())
         .title("Donut Browser")
-        .inner_size(800.0, 500.0)
-        .resizable(false)
+        // Larger default + resizable + a sane minimum so the user can
+        // grow the window for tables / dialogs that need more space.
+        .inner_size(1280.0, 800.0)
+        .min_inner_size(900.0, 600.0)
+        .resizable(true)
+        .maximizable(true)
         .fullscreen(false)
         .center()
         .focused(true)
@@ -1577,11 +1589,13 @@ pub fn run() {
         }
       });
 
-      // Start Camoufox cleanup task
+      // Start Camoufox cleanup task. Runs every 30 s — the previous 5 s
+      // tick fired even on hosts that never launch a Camoufox profile,
+      // and dead-instance detection isn't latency-sensitive.
       let _app_handle_cleanup = app.handle().clone();
       tauri::async_runtime::spawn(async move {
         let camoufox_manager = crate::camoufox_manager::CamoufoxManager::instance();
-        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(5));
+        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(30));
 
         loop {
           interval.tick().await;
@@ -1793,6 +1807,21 @@ pub fn run() {
             log::error!("Failed to load app settings for API startup: {e}");
           }
         }
+      });
+
+      // KOL batch watchdog — closes long-unauthenticated profiles
+      // during a batch session. Light task (15s tick), runs forever.
+      let app_handle_kol_watchdog = app.handle().clone();
+      tauri::async_runtime::spawn(async move {
+        crate::kol_automation::batch::start_unauth_watchdog(app_handle_kol_watchdog).await;
+      });
+
+      // KOL local 24h dedup cache: load JSON into memory before any
+      // ingest can fire (synchronous, fast even at ~5MB), then spawn
+      // the periodic flush+gc task.
+      crate::kol_automation::dedup::load_from_disk();
+      tauri::async_runtime::spawn(async move {
+        crate::kol_automation::dedup::start_flush_loop().await;
       });
 
       // Start sync subscription and scheduler if configured
@@ -2051,6 +2080,20 @@ pub fn run() {
       kol_automation::kol_start_gather,
       kol_automation::kol_stop_gather,
       kol_automation::kol_is_gather_running,
+      kol_automation::kol_gather_status,
+      kol_automation::kol_gather_local_stats,
+      kol_automation::dump::kol_dump_douyin_dom,
+      kol_automation::dump::kol_list_douyin_profiles,
+      kol_automation::batch::kol_batch_start,
+      kol_automation::batch::kol_batch_stop,
+      kol_automation::batch::kol_batch_status,
+      kol_automation::batch::kol_batch_events,
+      kol_automation::batch::kol_start_single_profile,
+      kol_automation::batch::kol_stop_single_profile,
+      // KOL account session (tomato-server)
+      kol_client::set_kol_credentials,
+      kol_client::clear_kol_credentials,
+      kol_client::kol_auth_status,
     ])
     .build(tauri::generate_context!())
     .expect("error while building tauri application")

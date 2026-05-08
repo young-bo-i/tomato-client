@@ -117,62 +117,14 @@ export function useProfileEvents(): UseProfileEventsReturn {
     };
   }, [loadProfiles, loadGroups]);
 
-  // Sync profile running states periodically to ensure consistency
-  useEffect(() => {
-    const syncRunningStates = async () => {
-      if (profiles.length === 0) return;
-
-      try {
-        const statusChecks = profiles.map(async (profile) => {
-          try {
-            const isRunning = await invoke<boolean>("check_browser_status", {
-              profile,
-            });
-            return { id: profile.id, isRunning };
-          } catch (error) {
-            console.error(
-              `Failed to check status for profile ${profile.name}:`,
-              error,
-            );
-            return { id: profile.id, isRunning: false };
-          }
-        });
-
-        const statuses = await Promise.all(statusChecks);
-
-        setRunningProfiles((prev) => {
-          const next = new Set(prev);
-          let hasChanges = false;
-
-          statuses.forEach(({ id, isRunning }) => {
-            if (isRunning && !prev.has(id)) {
-              next.add(id);
-              hasChanges = true;
-            } else if (!isRunning && prev.has(id)) {
-              next.delete(id);
-              hasChanges = true;
-            }
-          });
-
-          return hasChanges ? next : prev;
-        });
-      } catch (error) {
-        console.error("Failed to sync profile running states:", error);
-      }
-    };
-
-    // Initial sync
-    void syncRunningStates();
-
-    // Sync every 30 seconds to catch any missed events
-    const interval = setInterval(() => {
-      void syncRunningStates();
-    }, 30000);
-
-    return () => {
-      clearInterval(interval);
-    };
-  }, [profiles]);
+  // No periodic syncRunningStates loop here:
+  //
+  // The Rust side (lib.rs:1672) runs a 5 s status broadcaster that emits
+  // `profile-running-changed` whenever it observes a change. Our event
+  // listener above keeps `runningProfiles` in lockstep with that. The
+  // previous "every 30 s, fan-N invokes for safety" loop did the same
+  // work twice — restarted on every `profiles` array reference change,
+  // and could race the listener-driven updates.
 
   return {
     profiles,

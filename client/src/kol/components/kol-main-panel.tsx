@@ -1,100 +1,115 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { KolLoginDialog } from "./kol-login-dialog";
-import { KolDashboard } from "./kol-dashboard";
-import { KolAccountPanel } from "./kol-account-panel";
-import { KolTaskPanel } from "./kol-task-panel";
-import { KolAutoGatherPanel } from "./kol-auto-gather-panel";
-import { KolSettingPanel } from "./kol-setting-panel";
+import { useMemo, useState } from "react";
 import { useKolAuth } from "../hooks/use-kol-auth";
+import { KolDomDumpPanel } from "./kol-dom-dump-panel";
+import { KolDouyinVideosPanel } from "./kol-douyin-videos-panel";
+import { KolQimaoStatsPanel } from "./kol-qimao-stats-panel";
+import { KolSideNav, type NavGroup } from "./kol-side-nav";
+import { KolTeamSettingsPanel } from "./kol-team-settings-panel";
+import { KolTomatoStatsPanel } from "./kol-tomato-stats-panel";
+
+const COMMON_GROUPS: NavGroup[] = [
+  {
+    label: "采集",
+    items: [
+      { value: "dom-dump", label: "采集控制" },
+      { value: "douyin-videos", label: "抖音视频" },
+    ],
+  },
+];
+
+/// Tier-1 users WITH at least one tier-2 subordinate see this group.
+/// Anyone else (admins, tier-2, tier-1 without subs) doesn't — the
+/// setting would have no effect for them.
+const TEAM_GROUPS: NavGroup[] = [
+  {
+    label: "团队管理",
+    items: [{ value: "team-contribution", label: "二级贡献度" }],
+  },
+];
+
+const ADMIN_GROUPS: NavGroup[] = [
+  {
+    label: "数据看板",
+    items: [
+      { value: "tomato-stats", label: "番茄看板" },
+      { value: "qimao-stats", label: "七猫看板" },
+    ],
+  },
+];
 
 export function KolMainPanel() {
-  const { isLoggedIn, account, loading, logout, checkAuth } = useKolAuth();
-  const [showLogin, setShowLogin] = useState(false);
-  const [activeTab, setActiveTab] = useState("dashboard");
+  const { user, isAdmin, logout } = useKolAuth();
+  const [active, setActive] = useState("dom-dump");
 
-  useEffect(() => {
-    if (!loading && !isLoggedIn) {
-      setShowLogin(true);
+  // The "team-management" group is only relevant when the caller has
+  // tier-2 subordinates AND is themselves not admin (admins manage
+  // everything via the admin-config tab). Computed before the
+  // null-guard so the hook order stays stable regardless of auth state.
+  const showTeamGroup = useMemo(
+    () => Boolean(user?.has_subordinates) && !isAdmin,
+    [user?.has_subordinates, isAdmin],
+  );
+
+  if (!user) return null;
+
+  const groups: NavGroup[] = [
+    ...COMMON_GROUPS,
+    ...(showTeamGroup ? TEAM_GROUPS : []),
+    ...(isAdmin ? ADMIN_GROUPS : []),
+  ];
+
+  // Tier badge surfaces the user's place in the hierarchy. Admin >
+  // tier-2 (parent visible) > tier-1 (default — no extra badge to
+  // avoid clutter for the common case).
+  const tierBadge = (() => {
+    if (isAdmin) {
+      return <Badge variant="default" className="text-[10px] shrink-0">管理员</Badge>;
     }
-  }, [loading, isLoggedIn]);
-
-  if (loading) {
-    return (
-      <div className="flex items-center justify-center h-64">
-        <div className="text-muted-foreground">加载中...</div>
-      </div>
-    );
-  }
-
-  if (!isLoggedIn) {
-    return (
-      <div className="flex flex-col items-center justify-center h-64 gap-4">
-        <p className="text-muted-foreground">请先登录 KOL 服务</p>
-        <Button onClick={() => setShowLogin(true)}>登录</Button>
-        <KolLoginDialog
-          open={showLogin}
-          onOpenChange={setShowLogin}
-          onLoginSuccess={checkAuth}
-        />
-      </div>
-    );
-  }
+    if (user.parent_user_id !== null) {
+      return (
+        <Badge
+          variant="secondary"
+          className="text-[10px] shrink-0"
+          title={`上级: ${user.parent_username ?? user.parent_user_id}`}
+        >
+          二级 · {user.parent_username ?? "?"}
+        </Badge>
+      );
+    }
+    return null;
+  })();
 
   return (
     <div className="flex flex-col h-full">
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-2 border-b">
-        <div className="flex items-center gap-3">
-          <span className="text-sm font-medium">
-            KOL 工作台
-          </span>
-          <span className="text-xs text-muted-foreground">
-            {account?.account_name}
-          </span>
+      <div className="flex items-center justify-between gap-2 px-4 py-2 border-b shrink-0">
+        <div className="flex items-center gap-3 min-w-0">
+          <span className="text-sm font-medium whitespace-nowrap">KOL 工作台</span>
+          <span className="text-xs text-muted-foreground truncate">{user.username}</span>
+          {tierBadge}
         </div>
-        <Button variant="ghost" size="sm" onClick={logout}>
+        <Button variant="ghost" size="sm" onClick={logout} className="shrink-0">
           退出
         </Button>
       </div>
 
-      {/* Tabs */}
-      <Tabs value={activeTab} onValueChange={setActiveTab} className="flex-1 flex flex-col">
-        <TabsList className="mx-4 mt-2 w-fit">
-          <TabsTrigger value="dashboard">总览</TabsTrigger>
-          <TabsTrigger value="accounts">账号管理</TabsTrigger>
-          <TabsTrigger value="gather">自动采集</TabsTrigger>
-          <TabsTrigger value="tasks">任务数据</TabsTrigger>
-          <TabsTrigger value="settings">设置</TabsTrigger>
-        </TabsList>
-
+      {/* Body: sidebar + content */}
+      <div className="flex flex-1 min-h-0">
+        <KolSideNav groups={groups} active={active} onChange={setActive} />
         <div className="flex-1 overflow-auto p-4">
-          <TabsContent value="dashboard" className="mt-0">
-            <KolDashboard />
-          </TabsContent>
-          <TabsContent value="accounts" className="mt-0">
-            <KolAccountPanel />
-          </TabsContent>
-          <TabsContent value="gather" className="mt-0">
-            <KolAutoGatherPanel />
-          </TabsContent>
-          <TabsContent value="tasks" className="mt-0">
-            <KolTaskPanel />
-          </TabsContent>
-          <TabsContent value="settings" className="mt-0">
-            <KolSettingPanel />
-          </TabsContent>
+          {active === "dom-dump" && <KolDomDumpPanel />}
+          {active === "douyin-videos" && <KolDouyinVideosPanel />}
+          {showTeamGroup && active === "team-contribution" && (
+            <KolTeamSettingsPanel />
+          )}
+          {isAdmin && active === "tomato-stats" && <KolTomatoStatsPanel />}
+          {isAdmin && active === "qimao-stats" && <KolQimaoStatsPanel />}
         </div>
-      </Tabs>
-
-      <KolLoginDialog
-        open={showLogin}
-        onOpenChange={setShowLogin}
-        onLoginSuccess={checkAuth}
-      />
+      </div>
     </div>
   );
 }

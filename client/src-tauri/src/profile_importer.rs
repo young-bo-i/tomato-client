@@ -583,6 +583,11 @@ impl ProfileImporter {
           created_by_id: None,
           created_by_email: None,
           dns_blocklist: None,
+        kol_platform: None,
+
+        qimao_identifier: None,
+
+        qimao_credential: None,
         };
 
         match self
@@ -662,6 +667,11 @@ impl ProfileImporter {
           created_by_id: None,
           created_by_email: None,
           dns_blocklist: None,
+        kol_platform: None,
+
+        qimao_identifier: None,
+
+        qimao_credential: None,
         };
 
         match self
@@ -712,6 +722,11 @@ impl ProfileImporter {
       created_by_id: None,
       created_by_email: None,
       dns_blocklist: None,
+    kol_platform: None,
+
+    qimao_identifier: None,
+
+    qimao_credential: None,
     };
 
     self.profile_manager.save_profile(&profile)?;

@@ -16,7 +16,9 @@ out/
 # === Rust ===
 server/target/
 client/src-tauri/target/
-Cargo.lock
+
+# === Docker runtime state (postgres/redis bind-mount volumes) ===
+server/data/
 
 # === Environment ===
 .env

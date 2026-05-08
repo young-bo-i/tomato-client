@@ -1,92 +1,127 @@
+pub mod admin_api_log;
+pub mod admin_income;
+pub mod admin_jobs;
+pub mod admin_kol_config;
+pub mod admin_qimao_notice;
+pub mod admin_settings;
+pub mod admin_users;
 pub mod auth;
-pub mod account;
-pub mod kol;
-pub mod douyin;
-pub mod submit;
-pub mod task;
-pub mod setting;
-pub mod profile;
+pub mod douyin_videos;
+pub mod email_settings;
+pub mod profile_state;
+pub mod profiles;
+pub mod qimao;
+pub mod qimao_stats;
+pub mod tomato;
+pub mod tomato_stats;
+pub mod users_self;
 
 use actix_web::web;
 
 pub fn configure(cfg: &mut web::ServiceConfig) {
     cfg.service(
-        web::scope("/api/v1")
-            // Public routes
+        web::scope("/api")
             .service(
                 web::scope("/auth")
                     .route("/login", web::post().to(auth::login))
-                    .route("/test", web::get().to(auth::health_check))
-                    .route("/version", web::get().to(auth::get_version))
-            )
-            // Protected routes
-            .service(
-                web::scope("/account")
-                    .route("", web::get().to(account::get_account_info))
-                    .route("/create", web::post().to(account::create_sub_account))
-                    .route("/subs", web::get().to(account::get_all_sub_accounts))
-                    .route("/{id}/renew", web::post().to(account::renew_account))
-                    .route("/{id}/disable", web::post().to(account::disable_account))
-                    .route("/{id}/enable", web::post().to(account::enable_account))
+                    .route("/me", web::get().to(auth::me)),
             )
             .service(
-                web::scope("/kol")
-                    .route("/cookies", web::post().to(kol::submit_cookies))
-                    .route("/cookies", web::put().to(kol::update_cookies))
-                    .route("/list", web::get().to(kol::get_kol_accounts))
-                    .route("/base", web::get().to(kol::get_kol_base_infos))
-                    .route("/{id}", web::get().to(kol::get_kol_by_id))
-                    .route("/{id}", web::delete().to(kol::delete_kol_account))
-                    .route("/{id}/remark", web::put().to(kol::update_remark))
-                    .route("/invitecodes", web::get().to(kol::get_invite_codes))
+                // User self-edit endpoints. Distinct scope from
+                // /admin/users so it's clear who's allowed to call
+                // what (any auth user vs admin-only).
+                web::scope("/users/me")
+                    .route(
+                        "/tier2_contribution",
+                        web::put().to(users_self::update_my_tier2_contribution),
+                    ),
             )
             .service(
-                web::scope("/douyin")
-                    .route("/storage", web::post().to(douyin::submit_storage_state))
-                    .route("/storage", web::put().to(douyin::update_storage_state))
-                    .route("/list", web::get().to(douyin::get_accounts))
-                    .route("/base", web::get().to(douyin::get_base_accounts))
-                    .route("/{id}", web::get().to(douyin::get_by_id))
-                    .route("/{id}", web::delete().to(douyin::delete_account))
-                    .route("/{id}/status", web::put().to(douyin::set_status))
-                    .route("/{id}/remark", web::put().to(douyin::update_remark))
+                web::scope("/admin/users")
+                    .route("", web::get().to(admin_users::list))
+                    .route("", web::post().to(admin_users::create))
+                    .route("/{id}", web::patch().to(admin_users::update))
+                    .route("/{id}", web::delete().to(admin_users::delete)),
             )
             .service(
-                web::scope("/submit")
-                    .route("/brush", web::post().to(submit::submit_brush_task))
-                    .route("/frequency", web::get().to(submit::get_request_frequency))
+                web::scope("/admin/email_settings")
+                    .route("", web::get().to(email_settings::get))
+                    .route("", web::put().to(email_settings::put))
+                    .route("/test", web::post().to(email_settings::send_test)),
             )
             .service(
-                web::scope("/task")
-                    .route("/grid", web::post().to(task::get_task_data_grid))
-                    .route("/summary", web::get().to(task::get_task_summary))
-                    .route("/recent", web::get().to(task::get_recent_tasks))
-                    .route("/income", web::get().to(task::get_recent_income))
-                    .route("/books", web::get().to(task::get_books))
+                web::scope("/admin/settings")
+                    .route("", web::get().to(admin_settings::get))
+                    .route("", web::put().to(admin_settings::put)),
             )
             .service(
-                web::scope("/setting")
-                    .route("/all", web::get().to(setting::get_all_settings))
-                    .route("/platform", web::post().to(setting::save_platform_types))
-                    .route("/limit", web::post().to(setting::save_type_limit))
-                    .route("/dom/{dom_type}", web::get().to(setting::get_dom_config))
-                    .route("/dom", web::post().to(setting::update_dom_config))
-                    .route("/notice", web::get().to(setting::get_income_notice))
-                    .route("/notice", web::post().to(setting::set_income_notice))
-                    .route("/notice/email", web::post().to(setting::add_notice_email))
-                    .route("/notice/child", web::put().to(setting::set_notice_has_child))
-                    .route("/authorize/limit", web::get().to(setting::get_third_party_limit))
+                web::scope("/admin/jobs")
+                    .route("", web::get().to(admin_jobs::list))
+                    .route("/{name}/history", web::get().to(admin_jobs::history)),
             )
             .service(
-                web::scope("/profile")
-                    .route("", web::post().to(profile::create_profile))
-                    .route("", web::get().to(profile::list_profiles))
-                    .route("/{id}", web::get().to(profile::get_profile))
-                    .route("/{id}", web::put().to(profile::update_profile))
-                    .route("/{id}", web::delete().to(profile::delete_profile))
-                    .route("/{id}/sync/upload", web::post().to(profile::sync_upload))
-                    .route("/{id}/sync/download", web::get().to(profile::sync_download))
-                    .route("/{id}/sync/status", web::get().to(profile::sync_status))
+                web::scope("/admin/kol_config")
+                    .route("", web::get().to(admin_kol_config::list))
+                    .route("", web::put().to(admin_kol_config::update)),
             )
+            .service(
+                web::scope("/admin/api_log")
+                    .route("", web::get().to(admin_api_log::list))
+                    .route("", web::delete().to(admin_api_log::delete))
+                    .route("/mark", web::post().to(admin_api_log::mark))
+                    .route("/export", web::get().to(admin_api_log::export)),
+            )
+            .service(
+                web::scope("/admin/income")
+                    .route("", web::get().to(admin_income::list))
+                    .route("/overview", web::get().to(admin_income::overview)),
+            )
+            .service(
+                web::scope("/admin/qimao_notices")
+                    .route("", web::get().to(admin_qimao_notice::list)),
+            )
+            .service(
+                web::scope("/profiles")
+                    .route("", web::get().to(profiles::list))
+                    .route("", web::post().to(profiles::create))
+                    .route("/{id}", web::get().to(profiles::get))
+                    .route("/{id}", web::patch().to(profiles::update))
+                    .route("/{id}", web::delete().to(profiles::delete))
+                    .route("/{id}/state", web::get().to(profile_state::get))
+                    .route("/{id}/state", web::put().to(profile_state::put))
+                    .route(
+                        "/{id}/qimao_refresh_token",
+                        web::post().to(qimao::refresh_token),
+                    )
+                    .route(
+                        "/{id}/douyin_state",
+                        web::post().to(profiles::set_douyin_state),
+                    ),
+            )
+            .service(
+                web::scope("/tomato/books")
+                    .route("", web::get().to(tomato::list))
+                    .route("/refresh", web::post().to(tomato::refresh)),
+            )
+            .service(
+                web::scope("/qimao/books")
+                    .route("", web::get().to(qimao::list))
+                    .route("/refresh", web::post().to(qimao::refresh)),
+            )
+            .service(
+                web::scope("/qimao/stats")
+                    .route("/overview", web::get().to(qimao_stats::overview))
+                    .route("/accounts", web::get().to(qimao_stats::accounts)),
+            )
+            .service(
+                web::scope("/tomato/stats")
+                    .route("/overview", web::get().to(tomato_stats::overview))
+                    .route("/accounts", web::get().to(tomato_stats::accounts)),
+            )
+            .service(
+                web::scope("/douyin/videos")
+                    .route("", web::get().to(douyin_videos::list))
+                    .route("/bulk", web::post().to(douyin_videos::bulk_create)),
+            ),
     );
 }

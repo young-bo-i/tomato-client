@@ -11,6 +11,7 @@ actix-cors = "0.7"
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
+futures-util = "0.3"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
@@ -34,9 +35,29 @@ jsonwebtoken = "9"
 
 # Password hashing
 argon2 = "0.5"
+# MD5 — qimao's signin endpoint expects credential as lowercase hex MD5,
+# matching what the legacy C# stack did. Used only for that one call.
+md-5 = "0.10"
 
 # HTTP client (for platform API proxies)
-reqwest = { version = "0.12", features = ["json", "cookies"] }
+reqwest = { version = "0.12", features = ["json", "cookies", "gzip", "brotli", "deflate", "zstd"] }
+# `url` is a transitive of reqwest; declared explicitly so we can use
+# `url::Url::parse_with_params` directly instead of hand-rolled format!()
+# pipelines for query strings.
+url = "2"
+urlencoding = "2"
+# Retry middleware around reqwest — wraps every external HTTP client we
+# build so 5xx/429/timeouts get exponential backoff without each
+# service module reimplementing it.
+reqwest-middleware = { version = "0.3", features = ["json"] }
+reqwest-retry = "0.6"
+# hex — used for the qimao MD5 → lowercase hex encoding (replaces a
+# format!("{:02x}") loop). One-line `hex::encode(digest)`.
+hex = "0.4"
+# Lazy statics — used to share connection-pooled HTTP clients across
+# worker rounds (reqwest::Client is internally Arc-shared, but Lazy
+# avoids the per-round build).
+once_cell = "1"
 
 # Scheduling
 tokio-cron-scheduler = "0.13"
@@ -49,21 +70,34 @@ uuid = { version = "1", features = ["v4", "serde"] }
 
 # Logging
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "chrono"] }
 tracing-actix-web = "0.7"
 
 # Config
 dotenvy = "0.15"
+# Layered config (env + optional .toml). Replaces the manual
+# env::var() parsing scattered across config.rs + worker files.
+figment = { version = "0.10", features = ["env", "toml"] }
 
 # Regex (for text filtering)
 regex = "1"
 
 # Email (for income notifications)
 lettre = { version = "0.11", features = ["tokio1-native-tls"] }
+# Compile-time templates for notification email bodies. Replaces the
+# writeln!()-pile in jobs/notification_dispatcher.rs and gives us HTML
+# multipart support cheaply.
+askama = "0.12"
 
 # System
 num_cpus = "1"
 
+# Random (for SecretKey generation)
+rand = "0.8"
+
 # Error handling
 anyhow = "1"
 thiserror = "2"
+
+# Base64 (for profile-state local_storage wire transport)
+base64 = "0.22"

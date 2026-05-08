@@ -1,0 +1,22 @@
+# The Node service only needs *.js and package*.json.
+node_modules
+npm-debug.log*
+yarn-error.log
+
+# Infra / tooling
+Dockerfile
+.dockerignore
+.git
+.gitignore
+
+# Editor / OS noise
+.idea
+.vscode
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Docs
+README.md
+*.md

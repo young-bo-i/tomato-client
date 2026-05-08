@@ -6,7 +6,7 @@ use crate::events;
 use crate::profile::types::{BrowserProfile, SyncMode};
 use crate::profile::ProfileManager;
 use crate::settings_manager::SettingsManager;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -133,7 +133,7 @@ impl SyncResumeState {
     let state: Self = serde_json::from_str(&content).ok()?;
     // Discard if older than 12 hours (presigned URLs expire in 1h but files may still be there)
     if let Ok(started) = DateTime::parse_from_rfc3339(&state.started_at) {
-      let age = Utc::now() - started.with_timezone(&Utc);
+      let age = Local::now() - started.with_timezone(&Local);
       if age.num_hours() > 12 {
         let _ = fs::remove_file(&path);
         return None;
@@ -866,7 +866,7 @@ impl SyncEngine {
       resume_state = Some(SyncResumeState {
         profile_id: profile_id.to_string(),
         direction: "upload".to_string(),
-        started_at: Utc::now().to_rfc3339(),
+        started_at: Local::now().to_rfc3339(),
         completed_files: HashSet::new(),
       });
     }
@@ -1138,7 +1138,7 @@ impl SyncEngine {
       resume_state = Some(SyncResumeState {
         profile_id: profile_id.to_string(),
         direction: "download".to_string(),
-        started_at: Utc::now().to_rfc3339(),
+        started_at: Local::now().to_rfc3339(),
         completed_files: HashSet::new(),
       });
     }
@@ -1351,12 +1351,12 @@ impl SyncEngine {
       (Some(proxy), true) => {
         // Both exist - compare timestamps
         let local_updated = proxy.last_sync.unwrap_or(0);
-        let remote_updated: DateTime<Utc> = stat
+        let remote_updated: DateTime<Local> = stat
           .last_modified
           .as_ref()
           .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-          .map(|dt| dt.with_timezone(&Utc))
-          .unwrap_or_else(Utc::now);
+          .map(|dt| dt.with_timezone(&Local))
+          .unwrap_or_else(Local::now);
         let remote_ts = remote_updated.timestamp() as u64;
 
         if remote_ts > local_updated {
@@ -1493,12 +1493,12 @@ impl SyncEngine {
       (Some(group), true) => {
         // Both exist - compare timestamps
         let local_updated = group.last_sync.unwrap_or(0);
-        let remote_updated: DateTime<Utc> = stat
+        let remote_updated: DateTime<Local> = stat
           .last_modified
           .as_ref()
           .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-          .map(|dt| dt.with_timezone(&Utc))
-          .unwrap_or_else(Utc::now);
+          .map(|dt| dt.with_timezone(&Local))
+          .unwrap_or_else(Local::now);
         let remote_ts = remote_updated.timestamp() as u64;
 
         if remote_ts > local_updated {
@@ -1702,12 +1702,12 @@ impl SyncEngine {
     match (local_vpn, stat.exists) {
       (Some(vpn), true) => {
         let local_updated = vpn.last_sync.unwrap_or(0);
-        let remote_updated: DateTime<Utc> = stat
+        let remote_updated: DateTime<Local> = stat
           .last_modified
           .as_ref()
           .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-          .map(|dt| dt.with_timezone(&Utc))
-          .unwrap_or_else(Utc::now);
+          .map(|dt| dt.with_timezone(&Local))
+          .unwrap_or_else(Local::now);
         let remote_ts = remote_updated.timestamp() as u64;
 
         if remote_ts > local_updated {
@@ -1847,12 +1847,12 @@ impl SyncEngine {
     match (local_ext, stat.exists) {
       (Some(ext), true) => {
         let local_updated = ext.last_sync.unwrap_or(0);
-        let remote_updated: DateTime<Utc> = stat
+        let remote_updated: DateTime<Local> = stat
           .last_modified
           .as_ref()
           .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-          .map(|dt| dt.with_timezone(&Utc))
-          .unwrap_or_else(Utc::now);
+          .map(|dt| dt.with_timezone(&Local))
+          .unwrap_or_else(Local::now);
         let remote_ts = remote_updated.timestamp() as u64;
 
         if remote_ts > local_updated {
@@ -2045,12 +2045,12 @@ impl SyncEngine {
     match (local_group, stat.exists) {
       (Some(group), true) => {
         let local_updated = group.last_sync.unwrap_or(0);
-        let remote_updated: DateTime<Utc> = stat
+        let remote_updated: DateTime<Local> = stat
           .last_modified
           .as_ref()
           .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
-          .map(|dt| dt.with_timezone(&Utc))
-          .unwrap_or_else(Utc::now);
+          .map(|dt| dt.with_timezone(&Local))
+          .unwrap_or_else(Local::now);
         let remote_ts = remote_updated.timestamp() as u64;
 
         if remote_ts > local_updated {

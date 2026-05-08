@@ -1,20 +1,12 @@
 use sqlx::postgres::PgPoolOptions;
-use sqlx::migrate::Migrator;
-use std::path::Path;
-use crate::config::AppConfig;
-use crate::db::DbPool;
+use std::time::Duration;
 
-pub async fn create_pool(config: &AppConfig) -> anyhow::Result<DbPool> {
-    let pool = PgPoolOptions::new()
-        .max_connections(config.database_max_connections)
-        .acquire_timeout(std::time::Duration::from_secs(5))
-        .idle_timeout(std::time::Duration::from_secs(300))
-        .connect(&config.database_url)
-        .await?;
+pub type DbPool = sqlx::PgPool;
 
-    let migrator = Migrator::new(Path::new("./src/db/migrations")).await?;
-    migrator.run(&pool).await?;
-
-    tracing::info!("Database connected, migrations applied");
-    Ok(pool)
+pub async fn init(database_url: &str, max_connections: u32) -> Result<DbPool, sqlx::Error> {
+    PgPoolOptions::new()
+        .max_connections(max_connections)
+        .acquire_timeout(Duration::from_secs(10))
+        .connect(database_url)
+        .await
 }

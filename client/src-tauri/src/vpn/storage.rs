@@ -5,7 +5,7 @@ use aes_gcm::{
   aead::{Aead, KeyInit},
   Aes256Gcm, Nonce,
 };
-use chrono::Utc;
+use chrono::Local;
 use rand::RngExt;
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -314,7 +314,7 @@ impl VpnStorage {
     let mut storage = self.load_storage()?;
 
     if let Some(config) = storage.configs.iter_mut().find(|c| c.id == id) {
-      config.last_used = Some(Utc::now().timestamp());
+      config.last_used = Some(Local::now().timestamp());
       self.save_storage(&storage)
     } else {
       Err(VpnError::NotFound(id.to_string()))
@@ -346,7 +346,7 @@ impl VpnStorage {
       name: name.to_string(),
       vpn_type,
       config_data: config_data.to_string(),
-      created_at: Utc::now().timestamp(),
+      created_at: Local::now().timestamp(),
       last_used: None,
       sync_enabled,
       last_sync: None,
@@ -415,7 +415,7 @@ impl VpnStorage {
       name: display_name,
       vpn_type,
       config_data: content.to_string(),
-      created_at: Utc::now().timestamp(),
+      created_at: Local::now().timestamp(),
       last_used: None,
       sync_enabled,
       last_sync: None,

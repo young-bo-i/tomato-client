@@ -9,7 +9,7 @@ use crate::proxy_manager::PROXY_MANAGER;
 use crate::wayfern_manager::WayfernConfig;
 use std::fs::{self, create_dir_all};
 use std::path::{Path, PathBuf};
-use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, System};
+use sysinfo::Pid;
 
 pub struct ProfileManager {
   camoufox_manager: &'static crate::camoufox_manager::CamoufoxManager,
@@ -51,6 +51,9 @@ impl ProfileManager {
     group_id: Option<String>,
     ephemeral: bool,
     dns_blocklist: Option<String>,
+    kol_platform: Option<String>,
+    qimao_identifier: Option<String>,
+    qimao_credential: Option<String>,
   ) -> Result<BrowserProfile, Box<dyn std::error::Error>> {
     if proxy_id.is_some() && vpn_id.is_some() {
       return Err("Cannot set both proxy_id and vpn_id".into());
@@ -80,7 +83,6 @@ impl ProfileManager {
     let profiles_dir = self.get_profiles_dir();
     let profile_uuid_dir = profiles_dir.join(profile_id.to_string());
     let profile_data_dir = profile_uuid_dir.join("profile");
-    let profile_file = profile_uuid_dir.join("metadata.json");
 
     // Create profile directory with UUID and profile subdirectory
     create_dir_all(&profile_uuid_dir)?;
@@ -160,6 +162,11 @@ impl ProfileManager {
           created_by_id: None,
           created_by_email: None,
           dns_blocklist: None,
+          kol_platform: None,
+
+          qimao_identifier: None,
+
+          qimao_credential: None,
         };
 
         match self
@@ -260,6 +267,11 @@ impl ProfileManager {
           created_by_id: None,
           created_by_email: None,
           dns_blocklist: None,
+          kol_platform: None,
+
+          qimao_identifier: None,
+
+          qimao_credential: None,
         };
 
         match self
@@ -314,15 +326,13 @@ impl ProfileManager {
       created_by_id: None,
       created_by_email: None,
       dns_blocklist,
+      kol_platform,
+      qimao_identifier,
+      qimao_credential,
     };
 
-    // Save profile info
+    // Save profile info (posts to tomato-server)
     self.save_profile(&profile)?;
-
-    // Verify the profile was saved correctly
-    if !profile_file.exists() {
-      return Err(format!("Failed to create profile file for '{name}'").into());
-    }
 
     log::info!("Profile '{name}' created successfully with ID: {profile_id}");
 
@@ -351,15 +361,16 @@ impl ProfileManager {
   }
 
   pub fn save_profile(&self, profile: &BrowserProfile) -> Result<(), Box<dyn std::error::Error>> {
+    // Profile metadata is authoritative on the tomato-server. We still
+    // keep the local `profiles/{uuid}/` directory around because the
+    // browser process reads/writes its runtime state (cookies, history,
+    // cache) there.
     let profiles_dir = self.get_profiles_dir();
-    let profile_uuid_dir = profiles_dir.join(profile.id.to_string());
-    let profile_file = profile_uuid_dir.join("metadata.json");
+    create_dir_all(profiles_dir.join(profile.id.to_string()))?;
 
-    // Ensure the UUID directory exists
-    create_dir_all(&profile_uuid_dir)?;
-
-    let json = serde_json::to_string_pretty(profile)?;
-    fs::write(profile_file, json)?;
+    crate::kol_client::KOL_CLIENT
+      .save_profile_blocking(profile)
+      .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
 
     // Update tag suggestions after any save
     let _ = crate::tag_manager::TAG_MANAGER.lock().map(|tm| {
@@ -370,40 +381,9 @@ impl ProfileManager {
   }
 
   pub fn list_profiles(&self) -> Result<Vec<BrowserProfile>, Box<dyn std::error::Error>> {
-    let profiles_dir = self.get_profiles_dir();
-    if !profiles_dir.exists() {
-      return Ok(vec![]);
-    }
-
-    let mut profiles = Vec::new();
-    for entry in fs::read_dir(profiles_dir)? {
-      let entry = entry?;
-      let path = entry.path();
-
-      // Look for UUID directories containing metadata.json
-      if path.is_dir() {
-        let metadata_file = path.join("metadata.json");
-        if metadata_file.exists() {
-          let content = fs::read_to_string(&metadata_file)?;
-          let mut profile: BrowserProfile = serde_json::from_str(&content)?;
-
-          // Backfill host_os from browser config for profiles created before
-          // the field existed (or synced without it).
-          if profile.host_os.is_none() {
-            let inferred_os = profile.resolved_os().map(str::to_string);
-            if let Some(os) = inferred_os {
-              profile.host_os = Some(os);
-              if let Ok(json) = serde_json::to_string_pretty(&profile) {
-                let _ = fs::write(&metadata_file, json);
-              }
-            }
-          }
-
-          profiles.push(profile);
-        }
-      }
-    }
-
+    let profiles = crate::kol_client::KOL_CLIENT
+      .list_profiles_blocking()
+      .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
     Ok(profiles)
   }
 
@@ -475,14 +455,34 @@ impl ProfileManager {
     // Remember sync mode before deleting local files
     let was_sync_enabled = profile.is_sync_enabled();
 
+    // Delete metadata on the tomato-server FIRST — if the server can't be
+    // reached, the local directory is left intact so the user can retry.
+    crate::kol_client::KOL_CLIENT
+      .delete_profile_blocking(profile.id)
+      .map_err(|e| -> Box<dyn std::error::Error> { e.into() })?;
+
     let profiles_dir = self.get_profiles_dir();
     let profile_uuid_dir = profiles_dir.join(profile.id.to_string());
 
-    // Delete the entire UUID directory (contains both metadata.json and profile data)
+    // Delete the entire UUID directory (browser runtime state: cookies,
+    // history, cache). The metadata.json that used to live here is no
+    // longer written — it's on the server now.
     if profile_uuid_dir.exists() {
       log::info!("Deleting profile directory: {}", profile_uuid_dir.display());
       fs::remove_dir_all(&profile_uuid_dir)?;
       log::info!("Profile directory deleted successfully");
+    }
+
+    // Remove the per-profile KOL extension directory (kol-extension-{uuid}).
+    // This is created alongside the profile for douyin scraping and lives
+    // outside profiles/ in app_data, so it's not covered by the uuid dir
+    // removal above.
+    let ext_dir = crate::app_dirs::data_dir()
+      .join(format!("kol-extension-{}", profile.id));
+    if ext_dir.exists() {
+      if let Err(e) = fs::remove_dir_all(&ext_dir) {
+        log::warn!("Failed to remove KOL extension dir {}: {e}", ext_dir.display());
+      }
     }
 
     // Verify deletion was successful
@@ -549,6 +549,15 @@ impl ProfileManager {
     if profile_dir.exists() {
       fs::remove_dir_all(&profile_dir)?;
       log::info!("Deleted local profile {} (tombstoned remotely)", profile_id);
+    }
+
+    // Also remove the KOL extension dir for this profile if present.
+    let ext_dir = crate::app_dirs::data_dir()
+      .join(format!("kol-extension-{profile_id}"));
+    if ext_dir.exists() {
+      if let Err(e) = fs::remove_dir_all(&ext_dir) {
+        log::warn!("Failed to remove KOL extension dir {}: {e}", ext_dir.display());
+      }
     }
 
     if let Err(e) = crate::downloaded_browsers_registry::DownloadedBrowsersRegistry::instance()
@@ -931,6 +940,9 @@ impl ProfileManager {
       created_by_id: None,
       created_by_email: None,
       dns_blocklist: source.dns_blocklist,
+      kol_platform: source.kol_platform,
+      qimao_identifier: source.qimao_identifier,
+      qimao_credential: source.qimao_credential,
     };
 
     self.save_profile(&new_profile)?;
@@ -1243,26 +1255,26 @@ impl ProfileManager {
       return self.check_wayfern_status(&app_handle, profile).await;
     }
 
-    // For non-camoufox browsers, use the existing PID-based logic
+    // For non-camoufox browsers, use the existing PID-based logic.
+    // The shared `system_snapshot` cache batches snapshot refreshes
+    // across the parallel `Promise.all(profiles.map(check_browser_status))`
+    // call from the frontend.
     let inner_profile = profile.clone();
-    let system = System::new_with_specifics(
-      RefreshKind::nothing().with_processes(ProcessRefreshKind::everything()),
-    );
-    let mut is_running = false;
-    let mut found_pid: Option<u32> = None;
+    let profiles_dir = self.get_profiles_dir();
+    let profile_data_path = profile.get_profile_data_path(&profiles_dir);
+    let profile_data_path_str = profile_data_path.to_string_lossy().into_owned();
+    let browser = profile.browser.clone();
+    let stored_pid = profile.process_id;
+    let profile_name = profile.name.clone();
 
-    // First check if the stored PID is still valid
-    if let Some(pid) = profile.process_id {
-      if let Some(process) = system.process(Pid::from(pid as usize)) {
-        let cmd = process.cmd();
-        // Verify this process is actually our browser with the correct profile
-        let profiles_dir = self.get_profiles_dir();
-        let profile_data_path = profile.get_profile_data_path(&profiles_dir);
-        let profile_data_path_str = profile_data_path.to_string_lossy();
-        let profile_path_match = cmd.iter().any(|s| {
+    let (is_running, found_pid) = crate::system_snapshot::with_processes(move |system| {
+      let mut is_running = false;
+      let mut found_pid: Option<u32> = None;
+
+      let path_matches = |cmd: &[std::ffi::OsString]| -> bool {
+        cmd.iter().any(|s| {
           let arg = s.to_str().unwrap_or("");
-          // For Firefox-based browsers, check for exact profile path match
-          if profile.browser == "camoufox" {
+          if browser == "camoufox" {
             arg == profile_data_path_str
               || arg == format!("-profile={profile_data_path_str}")
               || (arg == "-profile"
@@ -1270,27 +1282,29 @@ impl ProfileManager {
                   .iter()
                   .any(|s2| s2.to_str().unwrap_or("") == profile_data_path_str))
           } else {
-            // For Chromium-based browsers (Wayfern), check for user-data-dir
             arg.contains(&format!("--user-data-dir={profile_data_path_str}"))
               || arg == profile_data_path_str
           }
-        });
+        })
+      };
 
-        if profile_path_match {
-          is_running = true;
-          found_pid = Some(pid);
+      if let Some(pid) = stored_pid {
+        if let Some(process) = system.process(Pid::from(pid as usize)) {
+          if path_matches(process.cmd()) {
+            is_running = true;
+            found_pid = Some(pid);
+          }
         }
       }
-    }
 
-    // If we didn't find the browser with the stored PID, search all processes
-    if !is_running {
-      for (pid, process) in system.processes() {
-        let cmd = process.cmd();
-        if cmd.len() >= 2 {
-          // Check if this is the right browser executable first
+      if !is_running {
+        for (pid, process) in system.processes() {
+          let cmd = process.cmd();
+          if cmd.len() < 2 {
+            continue;
+          }
           let exe_name = process.name().to_string_lossy().to_lowercase();
-          let is_correct_browser = match profile.browser.as_str() {
+          let is_correct_browser = match browser.as_str() {
             "camoufox" => exe_name.contains("camoufox") || exe_name.contains("firefox"),
             "wayfern" => {
               exe_name.contains("wayfern")
@@ -1299,84 +1313,33 @@ impl ProfileManager {
             }
             _ => false,
           };
-
           if !is_correct_browser {
             continue;
           }
-
-          // Check for profile path match
-          let profiles_dir = self.get_profiles_dir();
-          let profile_data_path = profile.get_profile_data_path(&profiles_dir);
-          let profile_data_path_str = profile_data_path.to_string_lossy();
-          let profile_path_match = cmd.iter().any(|s| {
-            let arg = s.to_str().unwrap_or("");
-            // For Firefox-based browsers, check for exact profile path match
-            if profile.browser == "camoufox" {
-              arg == profile_data_path_str
-                || arg == format!("-profile={profile_data_path_str}")
-                || (arg == "-profile"
-                  && cmd
-                    .iter()
-                    .any(|s2| s2.to_str().unwrap_or("") == profile_data_path_str))
-            } else {
-              // For Chromium-based browsers (Wayfern), check for user-data-dir
-              arg.contains(&format!("--user-data-dir={profile_data_path_str}"))
-                || arg == profile_data_path_str
-            }
-          });
-
-          if profile_path_match {
-            // Found a matching process
+          if path_matches(cmd) {
             found_pid = Some(pid.as_u32());
             is_running = true;
             log::info!(
               "Found browser process with PID: {} for profile: {}",
               pid.as_u32(),
-              profile.name
+              profile_name
             );
             break;
           }
         }
       }
-    }
 
-    // Only persist status changes if the profile metadata still exists on disk
-    let profiles_dir = self.get_profiles_dir();
-    let profile_uuid_dir = profiles_dir.join(profile.id.to_string());
-    let metadata_file = profile_uuid_dir.join("metadata.json");
-    let metadata_exists = metadata_file.exists();
+      (is_running, found_pid)
+    })
+    .await;
 
-    if metadata_exists {
-      // Load the latest profile from disk to avoid overwriting fields like proxy_id
-      let latest_profile: BrowserProfile = match std::fs::read_to_string(&metadata_file)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-      {
-        Some(p) => p,
-        None => inner_profile.clone(),
-      };
-
-      let mut merged = latest_profile.clone();
-
-      if let Some(pid) = found_pid {
-        if merged.process_id != Some(pid) {
-          merged.process_id = Some(pid);
-          if let Err(e) = self.save_profile(&merged) {
-            log::warn!("Warning: Failed to update profile with new PID: {e}");
-          }
-        }
-      } else if merged.process_id.is_some() {
-        // Clear the PID if no process found
-        merged.process_id = None;
-        if let Err(e) = self.save_profile(&merged) {
-          log::warn!("Warning: Failed to clear profile PID: {e}");
-        }
-      }
-
-      // Emit profile update event to frontend
-      if let Err(e) = events::emit("profile-updated", &merged) {
-        log::warn!("Warning: Failed to emit profile update event: {e}");
-      }
+    // process_id is device-local runtime state — no longer persisted
+    // server-side. Emit an event with the PID attached so the UI can show
+    // a "running" badge without another round-trip.
+    let mut merged = inner_profile.clone();
+    merged.process_id = found_pid;
+    if let Err(e) = events::emit("profile-updated", &merged) {
+      log::warn!("Warning: Failed to emit profile update event: {e}");
     }
 
     Ok(is_running)
@@ -1397,108 +1360,45 @@ impl ProfileManager {
     // Check if there's a running Camoufox instance for this profile
     match launcher.find_camoufox_by_profile(&profile_path_str).await {
       Ok(Some(camoufox_process)) => {
-        // Found a running instance, update profile with process info if changed
-        let profiles_dir = self.get_profiles_dir();
-        let profile_uuid_dir = profiles_dir.join(profile.id.to_string());
-        let metadata_file = profile_uuid_dir.join("metadata.json");
-        let metadata_exists = metadata_file.exists();
-
-        if metadata_exists {
-          // Load latest to avoid overwriting other fields
-          let mut latest: BrowserProfile = match std::fs::read_to_string(&metadata_file)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-          {
-            Some(p) => p,
-            None => profile.clone(),
-          };
-
-          if latest.process_id != camoufox_process.processId {
-            latest.process_id = camoufox_process.processId;
-            if let Err(e) = self.save_profile(&latest) {
-              log::warn!("Warning: Failed to update Camoufox profile with process info: {e}");
-            }
-
-            // Emit profile update event to frontend
-            if let Err(e) = events::emit("profile-updated", &latest) {
-              log::warn!("Warning: Failed to emit profile update event: {e}");
-            }
-
-            log::info!(
-              "Camoufox process has started for profile '{}' with PID: {:?}",
-              profile.name,
-              camoufox_process.processId
-            );
+        // process_id is device-local; emit the event with the PID stamped so
+        // the UI refreshes, but don't persist it server-side.
+        if profile.process_id != camoufox_process.processId {
+          let mut latest = profile.clone();
+          latest.process_id = camoufox_process.processId;
+          if let Err(e) = events::emit("profile-updated", &latest) {
+            log::warn!("Warning: Failed to emit profile update event: {e}");
           }
+          log::info!(
+            "Camoufox process has started for profile '{}' with PID: {:?}",
+            profile.name,
+            camoufox_process.processId
+          );
         }
         Ok(true)
       }
       Ok(None) => {
-        // No running instance found, clear process ID if set and stop proxy
         if profile.ephemeral {
           crate::ephemeral_dirs::remove_ephemeral_dir(&profile.id.to_string());
         }
-
-        let profiles_dir = self.get_profiles_dir();
-        let profile_uuid_dir = profiles_dir.join(profile.id.to_string());
-        let metadata_file = profile_uuid_dir.join("metadata.json");
-        let metadata_exists = metadata_file.exists();
-
-        if metadata_exists {
-          let mut latest: BrowserProfile = match std::fs::read_to_string(&metadata_file)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-          {
-            Some(p) => p,
-            None => profile.clone(),
-          };
-
-          if latest.process_id.is_some() {
-            latest.process_id = None;
-            if let Err(e) = self.save_profile(&latest) {
-              log::warn!("Warning: Failed to clear Camoufox profile process info: {e}");
-            }
-
-            if let Err(e) = events::emit("profile-updated", &latest) {
-              log::warn!("Warning: Failed to emit profile update event: {e}");
-            }
+        if profile.process_id.is_some() {
+          let mut latest = profile.clone();
+          latest.process_id = None;
+          if let Err(e) = events::emit("profile-updated", &latest) {
+            log::warn!("Warning: Failed to emit profile update event: {e}");
           }
         }
         Ok(false)
       }
       Err(e) => {
-        // Error checking status, assume not running and clear process ID
         log::warn!("Warning: Failed to check Camoufox status: {e}");
         if profile.ephemeral {
           crate::ephemeral_dirs::remove_ephemeral_dir(&profile.id.to_string());
         }
-
-        let profiles_dir = self.get_profiles_dir();
-        let profile_uuid_dir = profiles_dir.join(profile.id.to_string());
-        let metadata_file = profile_uuid_dir.join("metadata.json");
-        let metadata_exists = metadata_file.exists();
-
-        if metadata_exists {
-          let mut latest: BrowserProfile = match std::fs::read_to_string(&metadata_file)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-          {
-            Some(p) => p,
-            None => profile.clone(),
-          };
-
-          if latest.process_id.is_some() {
-            latest.process_id = None;
-            if let Err(e2) = self.save_profile(&latest) {
-              log::warn!(
-                "Warning: Failed to clear Camoufox profile process info after error: {e2}"
-              );
-            }
-
-            // Emit profile update event to frontend
-            if let Err(e3) = events::emit("profile-updated", &latest) {
-              log::warn!("Warning: Failed to emit profile update event: {e3}");
-            }
+        if profile.process_id.is_some() {
+          let mut latest = profile.clone();
+          latest.process_id = None;
+          if let Err(e) = events::emit("profile-updated", &latest) {
+            log::warn!("Warning: Failed to emit profile update event: {e}");
           }
         }
         Ok(false)
@@ -1521,71 +1421,29 @@ impl ProfileManager {
     // Check if there's a running Wayfern instance for this profile
     match manager.find_wayfern_by_profile(&profile_path_str).await {
       Some(wayfern_process) => {
-        // Found a running instance, update profile with process info if changed
-        let profiles_dir = self.get_profiles_dir();
-        let profile_uuid_dir = profiles_dir.join(profile.id.to_string());
-        let metadata_file = profile_uuid_dir.join("metadata.json");
-        let metadata_exists = metadata_file.exists();
-
-        if metadata_exists {
-          // Load latest to avoid overwriting other fields
-          let mut latest: BrowserProfile = match std::fs::read_to_string(&metadata_file)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-          {
-            Some(p) => p,
-            None => profile.clone(),
-          };
-
-          if latest.process_id != wayfern_process.processId {
-            latest.process_id = wayfern_process.processId;
-            if let Err(e) = self.save_profile(&latest) {
-              log::warn!("Warning: Failed to update Wayfern profile with process info: {e}");
-            }
-
-            // Emit profile update event to frontend
-            if let Err(e) = events::emit("profile-updated", &latest) {
-              log::warn!("Warning: Failed to emit profile update event: {e}");
-            }
-
-            log::info!(
-              "Wayfern process has started for profile '{}' with PID: {:?}",
-              profile.name,
-              wayfern_process.processId
-            );
+        if profile.process_id != wayfern_process.processId {
+          let mut latest = profile.clone();
+          latest.process_id = wayfern_process.processId;
+          if let Err(e) = events::emit("profile-updated", &latest) {
+            log::warn!("Warning: Failed to emit profile update event: {e}");
           }
+          log::info!(
+            "Wayfern process has started for profile '{}' with PID: {:?}",
+            profile.name,
+            wayfern_process.processId
+          );
         }
         Ok(true)
       }
       None => {
-        // No running instance found, clear process ID if set
         if profile.ephemeral {
           crate::ephemeral_dirs::remove_ephemeral_dir(&profile.id.to_string());
         }
-
-        let profiles_dir = self.get_profiles_dir();
-        let profile_uuid_dir = profiles_dir.join(profile.id.to_string());
-        let metadata_file = profile_uuid_dir.join("metadata.json");
-        let metadata_exists = metadata_file.exists();
-
-        if metadata_exists {
-          let mut latest: BrowserProfile = match std::fs::read_to_string(&metadata_file)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
-          {
-            Some(p) => p,
-            None => profile.clone(),
-          };
-
-          if latest.process_id.is_some() {
-            latest.process_id = None;
-            if let Err(e) = self.save_profile(&latest) {
-              log::warn!("Warning: Failed to clear Wayfern profile process info: {e}");
-            }
-
-            if let Err(e) = events::emit("profile-updated", &latest) {
-              log::warn!("Warning: Failed to emit profile update event: {e}");
-            }
+        if profile.process_id.is_some() {
+          let mut latest = profile.clone();
+          latest.process_id = None;
+          if let Err(e) = events::emit("profile-updated", &latest) {
+            log::warn!("Warning: Failed to emit profile update event: {e}");
           }
         }
         Ok(false)
@@ -1987,6 +1845,9 @@ pub async fn create_browser_profile_with_group(
   group_id: Option<String>,
   ephemeral: bool,
   dns_blocklist: Option<String>,
+  kol_platform: Option<String>,
+  qimao_identifier: Option<String>,
+  qimao_credential: Option<String>,
 ) -> Result<BrowserProfile, String> {
   let profile_manager = ProfileManager::instance();
   profile_manager
@@ -2003,6 +1864,9 @@ pub async fn create_browser_profile_with_group(
       group_id,
       ephemeral,
       dns_blocklist,
+      kol_platform,
+      qimao_identifier,
+      qimao_credential,
     )
     .await
     .map_err(|e| format!("Failed to create profile: {e}"))
@@ -2128,6 +1992,9 @@ pub async fn create_browser_profile_new(
   group_id: Option<String>,
   ephemeral: Option<bool>,
   dns_blocklist: Option<String>,
+  kol_platform: Option<String>,
+  qimao_identifier: Option<String>,
+  qimao_credential: Option<String>,
 ) -> Result<BrowserProfile, String> {
   let fingerprint_os = camoufox_config
     .as_ref()
@@ -2156,6 +2023,9 @@ pub async fn create_browser_profile_new(
     group_id,
     ephemeral.unwrap_or(false),
     dns_blocklist,
+    kol_platform,
+    qimao_identifier,
+    qimao_credential,
   )
   .await
 }

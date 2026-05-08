@@ -367,7 +367,7 @@ impl WayfernManager {
                 // Calculate timezone offset from IANA timezone name
                 if let Ok(tz) = geo.timezone.parse::<chrono_tz::Tz>() {
                   use chrono::Offset;
-                  let now = chrono::Utc::now().with_timezone(&tz);
+                  let now = chrono::Local::now().with_timezone(&tz);
                   let offset_seconds = now.offset().fix().local_minus_utc();
                   let offset_minutes = -(offset_seconds / 60);
                   obj.insert("timezoneOffset".to_string(), json!(offset_minutes));
@@ -538,6 +538,16 @@ impl WayfernManager {
       }
     }
 
+    // For KOL/Douyin profiles purge accumulated browser junk before
+    // each launch so storage doesn't grow unboundedly across sessions.
+    // We keep Cookies (login) and Local Storage (app state) but clear
+    // the rest — History, IndexedDB (Douyin feed cache), Service Worker
+    // caches, and Code Cache. These regenerate quickly and aren't
+    // needed between scraping sessions.
+    if profile.kol_platform.as_deref() == Some("douyin") {
+      purge_volatile_browser_data(profile_path);
+    }
+
     let mut args = vec![
       format!("--remote-debugging-port={port}"),
       "--remote-debugging-address=127.0.0.1".to_string(),
@@ -552,7 +562,55 @@ impl WayfernManager {
       "--disable-session-crashed-bubble".to_string(),
       "--hide-crash-restore-bubble".to_string(),
       "--disable-infobars".to_string(),
-      "--disable-features=DialMediaRouteProvider".to_string(),
+      // KOL perf args — every one has been audited to NOT affect
+      // slide-rate, DOM extraction, or Wayfern fingerprint injection:
+      //
+      //   --mute-audio: cuts audio decode CPU; we don't read audio.
+      //
+      //   --disk-cache-size / --media-cache-size: cap cache to 10MB
+      //     each. With P1's video-stream block in place, the media
+      //     cache rarely fills anyway. Reduces RAM at scale.
+      //
+      //   --num-raster-threads=1: default is 4. iGPU + low-end CPU
+      //     gain nothing from parallel rasterization for our content
+      //     (no full-screen video decode, only thumbnails + text).
+      //
+      //   --enable-low-end-device-mode: tells Chromium to act like a
+      //     RAM-constrained mobile device — shrinks image cache,
+      //     drops prefetching, more aggressive tab discard heuristics.
+      //
+      //   --renderer-process-limit=1: collapse all renderers in this
+      //     browser into one process. We only use the douyin tab, so
+      //     iframes/popups sharing a process is fine and saves
+      //     ~100MB/profile that would otherwise go to per-frame
+      //     renderer setup.
+      //
+      //   --blink-settings=imageAnimationPolicy=disabled: GIF/WebP
+      //     animations stop (live-stream sidebar avatars, animated
+      //     emojis). Saves ~5% renderer CPU.
+      //
+      //   --disable-smooth-scrolling: we drive slides via ArrowDown
+      //     keyboard events, not scroll. Smooth scrolling animation
+      //     wastes frames.
+      //
+      //   Disabled features:
+      //     - DialMediaRouteProvider: Cast targets discovery (Donut already had)
+      //     - Translate: i18n popup
+      //     - MediaSessionService: system playback metadata
+      //     - InterestFeedContentSuggestions: new-tab-page suggestions
+      //     - CalculateNativeWinOcclusion: Win-only occlusion check
+      //       (we don't care if our window is hidden)
+      //     - AcceleratedSmallCanvases: GPU-accel small canvases —
+      //       on iGPU the IPC overhead is heavier than software paint.
+      "--mute-audio".to_string(),
+      "--disk-cache-size=10485760".to_string(),
+      "--media-cache-size=10485760".to_string(),
+      "--num-raster-threads=1".to_string(),
+      "--enable-low-end-device-mode".to_string(),
+      "--renderer-process-limit=1".to_string(),
+      "--blink-settings=imageAnimationPolicy=disabled".to_string(),
+      "--disable-smooth-scrolling".to_string(),
+      "--disable-features=DialMediaRouteProvider,Translate,MediaSessionService,InterestFeedContentSuggestions,CalculateNativeWinOcclusion,AcceleratedSmallCanvases".to_string(),
       "--use-mock-keychain".to_string(),
       "--password-store=basic".to_string(),
     ];
@@ -566,6 +624,12 @@ impl WayfernManager {
 
     if let Some(proxy) = proxy_url {
       args.push(format!("--proxy-server={proxy}"));
+      // KOL helper extension fetches the local Donut axum on
+      // 127.0.0.1:10108. Chromium's default proxy bypass usually
+      // covers loopback, but Donut's local proxy is itself on
+      // 127.0.0.1, which can confuse the bypass logic. Set it
+      // explicitly so localhost ingest is never tunneled.
+      args.push("--proxy-bypass-list=127.0.0.1;localhost;[::1]".to_string());
     }
 
     if ephemeral {
@@ -576,8 +640,31 @@ impl WayfernManager {
       args.push("--disable-sync".to_string());
     }
 
-    if !extension_paths.is_empty() {
-      args.push(format!("--load-extension={}", extension_paths.join(",")));
+    // Auto-attach the KOL helper extension for douyin profiles. The
+    // extension is plain Chromium and works on the free Donut tier,
+    // unlike CDP automation. Each profile gets its own dir so the
+    // bundled profile.json carries the right UUID. See
+    // kol_automation::extension docs.
+    let mut effective_extension_paths: Vec<String> = extension_paths.to_vec();
+    if profile.kol_platform.as_deref() == Some("douyin") {
+      match crate::kol_automation::extension::ensure_extension_dir_for_profile(&profile.id) {
+        Ok(p) => {
+          let path_str = p.to_string_lossy().to_string();
+          log::info!("loading kol helper extension: {path_str}");
+          effective_extension_paths.push(path_str);
+        }
+        Err(e) => log::warn!("kol helper extension setup failed: {e}"),
+      }
+      // The local axum server (which receives gather POSTs from the
+      // extension) is started upstream in `launch_browser_profile`
+      // before we get here — keeping that out of wayfern_manager avoids
+      // a wayfern→api_server→wayfern type-cycle.
+    }
+    if !effective_extension_paths.is_empty() {
+      args.push(format!(
+        "--load-extension={}",
+        effective_extension_paths.join(",")
+      ));
     }
 
     // Pass wayfern token as CLI flag so the browser can gate CDP features
@@ -859,8 +946,6 @@ impl WayfernManager {
   }
 
   pub async fn find_wayfern_by_profile(&self, profile_path: &str) -> Option<WayfernLaunchResult> {
-    use sysinfo::{ProcessRefreshKind, RefreshKind, System};
-
     let mut inner = self.inner.lock().await;
 
     // Canonicalize the target path for comparison
@@ -886,12 +971,13 @@ impl WayfernManager {
     if let Some(id) = found_id {
       if let Some(instance) = inner.instances.get(&id) {
         if let Some(pid) = instance.process_id {
-          let system = System::new_with_specifics(
-            RefreshKind::nothing().with_processes(ProcessRefreshKind::everything()),
-          );
           let sysinfo_pid = sysinfo::Pid::from_u32(pid);
+          let alive = crate::system_snapshot::with_processes(move |sys| {
+            sys.process(sysinfo_pid).is_some()
+          })
+          .await;
 
-          if system.process(sysinfo_pid).is_some() {
+          if alive {
             return Some(WayfernLaunchResult {
               id: id.clone(),
               processId: instance.process_id,
@@ -915,7 +1001,7 @@ impl WayfernManager {
     // If not found in in-memory instances, scan system processes.
     // This handles the case where the GUI was restarted but Wayfern is still running.
     if let Some((pid, found_profile_path, cdp_port)) =
-      Self::find_wayfern_process_by_profile(&target_path)
+      Self::find_wayfern_process_by_profile(&target_path).await
     {
       log::info!(
         "Found running Wayfern process (PID: {}) for profile path via system scan",
@@ -947,67 +1033,62 @@ impl WayfernManager {
   }
 
   /// Scan system processes to find a Wayfern/Chromium process using a specific profile path
-  fn find_wayfern_process_by_profile(
+  async fn find_wayfern_process_by_profile(
     target_path: &std::path::Path,
   ) -> Option<(u32, String, Option<u16>)> {
-    use sysinfo::{ProcessRefreshKind, RefreshKind, System};
+    let target_path = target_path.to_path_buf();
+    let target_path_str = target_path.to_string_lossy().into_owned();
 
-    let system = System::new_with_specifics(
-      RefreshKind::nothing().with_processes(ProcessRefreshKind::everything()),
-    );
+    crate::system_snapshot::with_processes(move |system| {
+      for (pid, process) in system.processes() {
+        let cmd = process.cmd();
+        if cmd.is_empty() {
+          continue;
+        }
 
-    let target_path_str = target_path.to_string_lossy();
+        let exe_name = process.name().to_string_lossy().to_lowercase();
+        let is_chromium_like = exe_name.contains("wayfern")
+          || exe_name.contains("chromium")
+          || exe_name.contains("chrome");
+        if !is_chromium_like {
+          continue;
+        }
 
-    for (pid, process) in system.processes() {
-      let cmd = process.cmd();
-      if cmd.is_empty() {
-        continue;
-      }
+        // Skip child processes (renderer, GPU, utility, zygote, etc.) —
+        // only the main browser process lacks a --type= argument.
+        let is_child = cmd
+          .iter()
+          .any(|a| a.to_str().is_some_and(|s| s.starts_with("--type=")));
+        if is_child {
+          continue;
+        }
 
-      let exe_name = process.name().to_string_lossy().to_lowercase();
-      let is_chromium_like = exe_name.contains("wayfern")
-        || exe_name.contains("chromium")
-        || exe_name.contains("chrome");
+        let mut matched = false;
+        let mut cdp_port: Option<u16> = None;
 
-      if !is_chromium_like {
-        continue;
-      }
-
-      // Skip child processes (renderer, GPU, utility, zygote, etc.)
-      // Only the main browser process lacks a --type= argument
-      let is_child = cmd
-        .iter()
-        .any(|a| a.to_str().is_some_and(|s| s.starts_with("--type=")));
-      if is_child {
-        continue;
-      }
-
-      let mut matched = false;
-      let mut cdp_port: Option<u16> = None;
-
-      for arg in cmd.iter() {
-        if let Some(arg_str) = arg.to_str() {
-          if let Some(dir_val) = arg_str.strip_prefix("--user-data-dir=") {
-            let cmd_path = std::path::Path::new(dir_val)
-              .canonicalize()
-              .unwrap_or_else(|_| std::path::Path::new(dir_val).to_path_buf());
-            if cmd_path == target_path {
-              matched = true;
+        for arg in cmd.iter() {
+          if let Some(arg_str) = arg.to_str() {
+            if let Some(dir_val) = arg_str.strip_prefix("--user-data-dir=") {
+              let cmd_path = std::path::Path::new(dir_val)
+                .canonicalize()
+                .unwrap_or_else(|_| std::path::Path::new(dir_val).to_path_buf());
+              if cmd_path == target_path {
+                matched = true;
+              }
+            }
+            if let Some(port_val) = arg_str.strip_prefix("--remote-debugging-port=") {
+              cdp_port = port_val.parse().ok();
             }
           }
+        }
 
-          if let Some(port_val) = arg_str.strip_prefix("--remote-debugging-port=") {
-            cdp_port = port_val.parse().ok();
-          }
+        if matched {
+          return Some((pid.as_u32(), target_path_str.clone(), cdp_port));
         }
       }
-
-      if matched {
-        return Some((pid.as_u32(), target_path_str.to_string(), cdp_port));
-      }
-    }
-
-    None
+      None
+    })
+    .await
   }
 
   #[allow(dead_code)]
@@ -1047,23 +1128,33 @@ impl WayfernManager {
 
   #[allow(dead_code)]
   pub async fn cleanup_dead_instances(&self) {
-    use sysinfo::{ProcessRefreshKind, RefreshKind, System};
-
     let mut inner = self.inner.lock().await;
-    let mut dead_ids = Vec::new();
-
-    let system = System::new_with_specifics(
-      RefreshKind::nothing().with_processes(ProcessRefreshKind::everything()),
-    );
-
-    for (id, instance) in &inner.instances {
-      if let Some(pid) = instance.process_id {
-        let pid = sysinfo::Pid::from_u32(pid);
-        if !system.processes().contains_key(&pid) {
-          dead_ids.push(id.clone());
-        }
-      }
+    let live_pids: Vec<sysinfo::Pid> = inner
+      .instances
+      .values()
+      .filter_map(|i| i.process_id.map(sysinfo::Pid::from_u32))
+      .collect();
+    if live_pids.is_empty() {
+      return;
     }
+
+    let alive: std::collections::HashSet<sysinfo::Pid> =
+      crate::system_snapshot::with_processes(move |system| {
+        live_pids
+          .into_iter()
+          .filter(|pid| system.processes().contains_key(pid))
+          .collect()
+      })
+      .await;
+
+    let dead_ids: Vec<String> = inner
+      .instances
+      .iter()
+      .filter_map(|(id, instance)| {
+        let pid = instance.process_id.map(sysinfo::Pid::from_u32)?;
+        (!alive.contains(&pid)).then(|| id.clone())
+      })
+      .collect();
 
     for id in dead_ids {
       log::info!("Cleaning up dead Wayfern instance: {id}");
@@ -1074,4 +1165,61 @@ impl WayfernManager {
 
 lazy_static::lazy_static! {
   static ref WAYFERN_MANAGER: WayfernManager = WayfernManager::new();
+}
+
+/// Delete Chromium subdirs that accumulate without bound between
+/// scraping sessions. Called before each KOL/Douyin profile launch.
+///
+/// Preserved: Cookies, Local Storage, Session Storage, os_crypt_key
+/// (all needed for Douyin login persistence and Donut key management).
+///
+/// Cleared: History, IndexedDB, Service Worker, Code Cache, GPU Cache.
+/// These regenerate within seconds of first page load and are the
+/// primary sources of long-term disk growth on automation profiles.
+fn purge_volatile_browser_data(user_data_dir: &str) {
+  let base = std::path::Path::new(user_data_dir);
+  let default = base.join("Default");
+
+  // Dirs/files inside the Default profile subdirectory
+  let volatile_in_default: &[&str] = &[
+    "History",
+    "History-journal",
+    "IndexedDB",
+    "Service Worker",
+    "Code Cache",
+    "GPUCache",
+    "blob_storage",
+    "databases",
+    "Application Cache",
+    "DawnCache",
+  ];
+  for name in volatile_in_default {
+    let target = default.join(name);
+    if target.exists() {
+      if target.is_dir() {
+        if let Err(e) = std::fs::remove_dir_all(&target) {
+          log::warn!("purge_volatile: rm {}: {e}", target.display());
+        }
+      } else if let Err(e) = std::fs::remove_file(&target) {
+        log::warn!("purge_volatile: rm {}: {e}", target.display());
+      }
+    }
+  }
+
+  // Dirs at the user-data-dir root level (shared across profiles in Chromium)
+  let volatile_at_root: &[&str] = &[
+    "GrShaderCache",
+    "ShaderCache",
+    "Code Cache",
+  ];
+  for name in volatile_at_root {
+    let target = base.join(name);
+    if target.is_dir() {
+      if let Err(e) = std::fs::remove_dir_all(&target) {
+        log::warn!("purge_volatile: rm {}: {e}", target.display());
+      }
+    }
+  }
+
+  log::info!("purge_volatile: cleared session junk for {user_data_dir}");
 }

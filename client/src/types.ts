@@ -36,7 +36,28 @@ export interface BrowserProfile {
   created_by_id?: string;
   created_by_email?: string;
   dns_blocklist?: string;
+  /** Business-level classification: "tomato" | "qimao" | "douyin". */
+  kol_platform?: KolPlatform;
+  /** 七猫达人 account identifier (phone or email). Required by the
+   * create-profile dialog when kol_platform === 'qimao'. */
+  qimao_identifier?: string | null;
+  /** 七猫达人 account password (plaintext at rest, MD5'd at signin). */
+  qimao_credential?: string | null;
+  /** Server-managed: most recent x-qm-devops-token from signin. */
+  qimao_token?: string | null;
+  /** Server-managed: ISO timestamp of the last signin attempt. */
+  qimao_token_refreshed_at?: string | null;
+  /** Server-managed: last signin error if any (cleared on success). */
+  qimao_token_last_error?: string | null;
 }
+
+export type KolPlatform = "tomato" | "qimao" | "douyin";
+
+export const KOL_PLATFORM_LABELS: Record<KolPlatform, string> = {
+  tomato: "番茄达人",
+  qimao: "七猫达人",
+  douyin: "抖音",
+};
 
 export interface Extension {
   id: string;

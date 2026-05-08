@@ -1839,7 +1839,8 @@ impl McpServer {
     let mut profile = ProfileManager::instance()
       .create_profile_with_group(
         app_handle, name, browser, version, "stable", proxy_id, None, None, None, group_id, false,
-        None,
+        None, None, None, None,
+        // dns_blocklist, kol_platform, qimao_identifier, qimao_credential
       )
       .await
       .map_err(|e| McpError {

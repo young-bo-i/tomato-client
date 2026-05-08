@@ -53,9 +53,11 @@ import type {
   BrowserReleaseTypes,
   CamoufoxConfig,
   CamoufoxOS,
+  KolPlatform,
   WayfernConfig,
   WayfernOS,
 } from "@/types";
+import { KOL_PLATFORM_LABELS } from "@/types";
 
 const getCurrentOS = (): CamoufoxOS => {
   if (typeof navigator === "undefined") return "linux";
@@ -85,6 +87,11 @@ interface CreateProfileDialogProps {
     extensionGroupId?: string;
     ephemeral?: boolean;
     dnsBlocklist?: string;
+    kolPlatform?: KolPlatform;
+    /** 七猫达人 account identifier — required when kolPlatform === 'qimao'. */
+    qimaoIdentifier?: string;
+    /** 七猫达人 account password — required when kolPlatform === 'qimao'. */
+    qimaoCredential?: string;
   }) => Promise<void>;
   selectedGroupId?: string;
   crossOsUnlocked?: boolean;
@@ -126,6 +133,12 @@ export function CreateProfileDialog({
   const [selectedProxyId, setSelectedProxyId] = useState<string>();
   const [proxyPopoverOpen, setProxyPopoverOpen] = useState(false);
   const [dnsBlocklist, setDnsBlocklist] = useState<string>("");
+  const [kolPlatform, setKolPlatform] = useState<KolPlatform>("tomato");
+  // qimao-only credentials. Server hashes the password (MD5 lowercase
+  // hex) when calling /user/signin every ~12h to keep x-qm-devops-token
+  // fresh. Required when kolPlatform === 'qimao'.
+  const [qimaoIdentifier, setQimaoIdentifier] = useState("");
+  const [qimaoCredential, setQimaoCredential] = useState("");
 
   // Camoufox anti-detect states
   const [camoufoxConfig, setCamoufoxConfig] = useState<CamoufoxConfig>(() => ({
@@ -398,6 +411,11 @@ export function CreateProfileDialog({
             extensionGroupId: selectedExtensionGroupId,
             ephemeral,
             dnsBlocklist: dnsBlocklist || undefined,
+            kolPlatform: kolPlatform || undefined,
+            qimaoIdentifier:
+              kolPlatform === "qimao" ? qimaoIdentifier.trim() : undefined,
+            qimaoCredential:
+              kolPlatform === "qimao" ? qimaoCredential : undefined,
           });
         } else {
           // Default to Camoufox
@@ -424,6 +442,11 @@ export function CreateProfileDialog({
             extensionGroupId: selectedExtensionGroupId,
             ephemeral,
             dnsBlocklist: dnsBlocklist || undefined,
+            kolPlatform: kolPlatform || undefined,
+            qimaoIdentifier:
+              kolPlatform === "qimao" ? qimaoIdentifier.trim() : undefined,
+            qimaoCredential:
+              kolPlatform === "qimao" ? qimaoCredential : undefined,
           });
         }
       } else {
@@ -448,6 +471,7 @@ export function CreateProfileDialog({
           proxyId: selectedProxyId,
           groupId: selectedGroupId !== "default" ? selectedGroupId : undefined,
           dnsBlocklist: dnsBlocklist || undefined,
+          kolPlatform: kolPlatform || undefined,
         });
       }
 
@@ -480,6 +504,9 @@ export function CreateProfileDialog({
       os: getCurrentOS() as WayfernOS, // Reset to current OS
     });
     setEphemeral(false);
+    setKolPlatform("tomato");
+    setQimaoIdentifier("");
+    setQimaoCredential("");
     onClose();
   };
 
@@ -513,10 +540,18 @@ export function CreateProfileDialog({
     if (!selectedBrowser) return true;
     if (isBrowserCurrentlyDownloading(selectedBrowser)) return true;
     if (!getCreatableVersion(selectedBrowser)) return true;
+    // 七猫达人 requires credentials so the server can call /signin and
+    // keep the token fresh. Disable submit until both are filled.
+    if (kolPlatform === "qimao") {
+      if (!qimaoIdentifier.trim() || !qimaoCredential) return true;
+    }
 
     return false;
   }, [
     profileName,
+    kolPlatform,
+    qimaoIdentifier,
+    qimaoCredential,
     selectedBrowser,
     isBrowserCurrentlyDownloading,
     getCreatableVersion,
@@ -682,6 +717,52 @@ export function CreateProfileDialog({
                             }}
                             placeholder="Enter profile name"
                           />
+                        </div>
+
+                        {/* KOL Platform — required, horizontal radio-style buttons */}
+                        <div className="space-y-2">
+                          <Label>平台 <span className="text-destructive">*</span></Label>
+                          <div className="flex gap-2">
+                            {(Object.keys(KOL_PLATFORM_LABELS) as KolPlatform[]).map((k) => (
+                              <button
+                                key={k}
+                                type="button"
+                                onClick={() => setKolPlatform(k)}
+                                className={[
+                                  "flex-1 px-3 py-2 rounded-md border text-sm font-medium transition-colors",
+                                  kolPlatform === k
+                                    ? "bg-primary text-primary-foreground border-primary"
+                                    : "bg-background text-foreground border-border hover:bg-muted",
+                                ].join(" ")}
+                              >
+                                {KOL_PLATFORM_LABELS[k]}
+                              </button>
+                            ))}
+                          </div>
+                          {kolPlatform === "qimao" && (
+                            <div className="space-y-2 mt-2 p-3 border rounded-md bg-muted/30">
+                              <Label className="text-xs text-muted-foreground">
+                                七猫账号 — 服务端每 12 小时自动刷新 token
+                              </Label>
+                              <Input
+                                id="qimao-identifier"
+                                value={qimaoIdentifier}
+                                onChange={(e) => setQimaoIdentifier(e.target.value)}
+                                placeholder="手机号 / 邮箱 *"
+                                autoComplete="off"
+                                required
+                              />
+                              <Input
+                                id="qimao-credential"
+                                type="password"
+                                value={qimaoCredential}
+                                onChange={(e) => setQimaoCredential(e.target.value)}
+                                placeholder="密码 *"
+                                autoComplete="new-password"
+                                required
+                              />
+                            </div>
+                          )}
                         </div>
 
                         {/* Ephemeral Option */}
@@ -1260,6 +1341,52 @@ export function CreateProfileDialog({
                             }}
                             placeholder="Enter profile name"
                           />
+                        </div>
+
+                        {/* KOL Platform — required, horizontal radio-style buttons */}
+                        <div className="space-y-2">
+                          <Label>平台 <span className="text-destructive">*</span></Label>
+                          <div className="flex gap-2">
+                            {(Object.keys(KOL_PLATFORM_LABELS) as KolPlatform[]).map((k) => (
+                              <button
+                                key={k}
+                                type="button"
+                                onClick={() => setKolPlatform(k)}
+                                className={[
+                                  "flex-1 px-3 py-2 rounded-md border text-sm font-medium transition-colors",
+                                  kolPlatform === k
+                                    ? "bg-primary text-primary-foreground border-primary"
+                                    : "bg-background text-foreground border-border hover:bg-muted",
+                                ].join(" ")}
+                              >
+                                {KOL_PLATFORM_LABELS[k]}
+                              </button>
+                            ))}
+                          </div>
+                          {kolPlatform === "qimao" && (
+                            <div className="space-y-2 mt-2 p-3 border rounded-md bg-muted/30">
+                              <Label className="text-xs text-muted-foreground">
+                                七猫账号 — 服务端每 12 小时自动刷新 token
+                              </Label>
+                              <Input
+                                id="qimao-identifier"
+                                value={qimaoIdentifier}
+                                onChange={(e) => setQimaoIdentifier(e.target.value)}
+                                placeholder="手机号 / 邮箱 *"
+                                autoComplete="off"
+                                required
+                              />
+                              <Input
+                                id="qimao-credential"
+                                type="password"
+                                value={qimaoCredential}
+                                onChange={(e) => setQimaoCredential(e.target.value)}
+                                placeholder="密码 *"
+                                autoComplete="new-password"
+                                required
+                              />
+                            </div>
+                          )}
                         </div>
 
                         {/* Regular Browser Configuration */}

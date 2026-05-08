@@ -1,0 +1,88 @@
+# ============================================================
+# tomato-kol 服务端 — 生产环境 docker-compose
+#
+# 与 docker-compose.yml 的区别:
+#   - server / abogus 使用 ACR 拉取的镜像 (而非本地 build)
+#   - 通过 ${VERSION} 变量切换镜像 tag (deploy.sh export)
+#   - JWT_SECRET / POSTGRES_PASSWORD 必须从 .env 读取,无 fallback
+#
+# 启动方式: ./scripts/deploy.sh
+# ============================================================
+
+services:
+  server:
+    image: crpi-ebrftpuujezamyxv.cn-shanghai.personal.cr.aliyuncs.com/cherrycans/tomato-server:${VERSION:-latest}
+    container_name: tomato-server
+    ports:
+      - "8099:8099"
+    environment:
+      - TZ=Asia/Shanghai
+      - HOST=0.0.0.0
+      - PORT=8099
+      - DATABASE_URL=postgres://tomato:${POSTGRES_PASSWORD:-tomato123}@postgres:5432/tomato_kol
+      - DATABASE_MAX_CONNECTIONS=100
+      - REDIS_URL=redis://redis:6379
+      - JWT_SECRET=${JWT_SECRET:?JWT_SECRET must be set in .env}
+      - JWT_EXPIRATION_HOURS=8760
+      - ABOGUS_URL=http://abogus:3000/api/get-a-bogus
+      - RUST_LOG=tomato_server=info,actix_web=info
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      abogus:
+        condition: service_started
+    networks:
+      - internal
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: tomato-postgres
+    environment:
+      - TZ=Asia/Shanghai
+      - PGTZ=Asia/Shanghai
+      - POSTGRES_USER=tomato
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:-tomato123}
+      - POSTGRES_DB=tomato_kol
+    volumes:
+      # 数据持久化到 ./data/postgres,跟开发环境保持一致
+      - ./data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tomato -d tomato_kol"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - internal
+    restart: unless-stopped
+    # 不暴露端口到主机,仅内部通信
+
+  redis:
+    image: redis:7-alpine
+    container_name: tomato-redis
+    volumes:
+      - ./data/redis:/data
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - internal
+    restart: unless-stopped
+    # 不暴露端口到主机,仅内部通信
+
+  abogus:
+    image: crpi-ebrftpuujezamyxv.cn-shanghai.personal.cr.aliyuncs.com/cherrycans/tomato-abogus:${VERSION:-latest}
+    container_name: tomato-abogus
+    networks:
+      - internal
+    restart: unless-stopped
+    # 不暴露端口到主机,仅内部通信 (http://abogus:3000/api/get-a-bogus)
+
+networks:
+  internal:
+    driver: bridge

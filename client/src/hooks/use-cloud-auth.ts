@@ -41,12 +41,27 @@ export function useCloudAuth(): UseCloudAuthReturn {
     });
 
     return () => {
-      void unlistenExpired.then((unlisten) => {
-        unlisten();
-      });
-      void unlistenChanged.then((unlisten) => {
-        unlisten();
-      });
+      // React 19 Strict Mode double-invokes effect cleanups in dev. The
+      // second call raises `undefined is not an object` inside Tauri's
+      // internal listeners map because the listener was already removed
+      // by the first call. Tauri's unlisten may throw sync OR reject
+      // async, so use an async closure + await to catch both.
+      void (async () => {
+        try {
+          const unlisten = await unlistenExpired;
+          await unlisten?.();
+        } catch {
+          /* already unregistered */
+        }
+      })();
+      void (async () => {
+        try {
+          const unlisten = await unlistenChanged;
+          await unlisten?.();
+        } catch {
+          /* already unregistered */
+        }
+      })();
     };
   }, [loadUser]);
 

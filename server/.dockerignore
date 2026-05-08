@@ -1,0 +1,38 @@
+# Whitelist-style: the Rust Dockerfile only needs Cargo.toml, Cargo.lock, and src/.
+# Everything else — especially data/, target/, and sibling services — stays out.
+
+# Build artifacts (huge; must not enter build context)
+target
+**/target
+
+# Runtime state (DB files, logs, caches) — must never land in the image
+data
+*.log
+
+# Sibling service with its own build (server/abogusapp has its own Dockerfile)
+abogusapp
+
+# Compose / infra (not needed to compile the binary)
+docker-compose.yml
+docker-compose.*.yml
+Dockerfile
+.dockerignore
+
+# Local env and secrets
+.env
+.env.*
+!.env.example
+
+# VCS / editor / OS noise
+.git
+.gitignore
+.idea
+.vscode
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# Docs (not compiled into the binary)
+README.md
+*.md

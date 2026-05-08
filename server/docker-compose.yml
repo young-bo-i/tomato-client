@@ -1,0 +1,84 @@
+services:
+  server:
+    build: .
+    container_name: tomato-server
+    ports:
+      - "8099:8099"    # 唯一对外暴露的端口，供客户端通信
+    environment:
+      # All timestamps (logs + chrono::Local::now() + sqlx-read TIMESTAMPTZ
+      # values) are interpreted in this tz. Match postgres so they line up.
+      - TZ=Asia/Shanghai
+      - HOST=0.0.0.0
+      - PORT=8099
+      - DATABASE_URL=postgres://tomato:tomato123@postgres:5432/tomato_kol
+      - DATABASE_MAX_CONNECTIONS=100
+      - REDIS_URL=redis://redis:6379
+      - JWT_SECRET=${JWT_SECRET:-your-secure-jwt-secret-key-at-least-32-chars}
+      - JWT_EXPIRATION_HOURS=8760
+      - ABOGUS_URL=http://abogus:3000/api/get-a-bogus
+      - RUST_LOG=tomato_server=info,actix_web=info
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      abogus:
+        condition: service_started
+    networks:
+      - internal
+    restart: unless-stopped
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: tomato-postgres
+    environment:
+      # Postgres timezone for displayed values + NOW(). The DB still
+      # stores TIMESTAMPTZ in UTC internally (Postgres standard) but
+      # every read converts to this tz, so psql / SELECT / sqlx all
+      # see Beijing time. PGTZ also makes psql client honor it.
+      - TZ=Asia/Shanghai
+      - PGTZ=Asia/Shanghai
+      - POSTGRES_USER=tomato
+      - POSTGRES_PASSWORD=tomato123
+      - POSTGRES_DB=tomato_kol
+    volumes:
+      # Bind-mount into ./data/postgres so the DB lives alongside the source
+      # tree — simplifies backups, migrations, and moving the stack.
+      - ./data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tomato -d tomato_kol"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - internal
+    restart: unless-stopped
+    # 不暴露端口到主机，仅内部通信
+
+  redis:
+    image: redis:7-alpine
+    container_name: tomato-redis
+    volumes:
+      - ./data/redis:/data
+    command: redis-server --appendonly yes --maxmemory 256mb --maxmemory-policy allkeys-lru
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    networks:
+      - internal
+    restart: unless-stopped
+    # 不暴露端口到主机，仅内部通信
+
+  abogus:
+    build: ./abogusapp
+    container_name: tomato-abogus
+    networks:
+      - internal
+    restart: unless-stopped
+    # 不暴露端口到主机，仅内部通信 (http://abogus:3000/api/get-a-bogus)
+
+networks:
+  internal:
+    driver: bridge

@@ -1,4 +1,4 @@
-use chrono::Utc;
+use chrono::Local;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
@@ -1359,7 +1359,7 @@ impl ProxyManager {
     let export_data = ProxyExportData {
       version: "1.0".to_string(),
       proxies,
-      exported_at: Utc::now().to_rfc3339(),
+      exported_at: Local::now().to_rfc3339(),
       source: "DonutBrowser".to_string(),
     };
 

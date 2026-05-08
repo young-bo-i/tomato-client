@@ -67,6 +67,21 @@ pub struct BrowserProfile {
   pub created_by_email: Option<String>,
   #[serde(default)]
   pub dns_blocklist: Option<String>,
+  /// Business-level classification: "tomato" | "qimao" | "douyin".
+  /// Chosen at profile creation; used by downstream automation.
+  #[serde(default)]
+  pub kol_platform: Option<String>,
+  /// 七猫达人 account identifier (phone or email). Required by the
+  /// create-profile dialog when kol_platform == "qimao". The server
+  /// uses it together with `qimao_credential` to call /user/signin
+  /// every ~12h and refresh `x-qm-devops-token`.
+  #[serde(default)]
+  pub qimao_identifier: Option<String>,
+  /// 七猫达人 account password. Stored verbatim — the server hashes
+  /// it (MD5 lowercase hex) at signin time, matching the legacy C#
+  /// stack. Encryption-at-rest can be layered in later.
+  #[serde(default)]
+  pub qimao_credential: Option<String>,
 }
 
 pub fn default_release_type() -> String {

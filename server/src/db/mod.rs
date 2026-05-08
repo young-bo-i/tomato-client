@@ -1,5 +1,3 @@
 pub mod pool;
 
-use sqlx::PgPool;
-
-pub type DbPool = PgPool;
+pub use pool::DbPool;

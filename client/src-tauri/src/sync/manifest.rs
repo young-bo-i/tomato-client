@@ -1,4 +1,4 @@
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -82,7 +82,7 @@ pub struct SyncManifest {
 
 impl SyncManifest {
   pub fn new(profile_id: String, exclude_globs: Vec<String>) -> Self {
-    let now = Utc::now().to_rfc3339();
+    let now = Local::now().to_rfc3339();
     Self {
       version: 1,
       profile_id,
@@ -94,10 +94,10 @@ impl SyncManifest {
     }
   }
 
-  pub fn updated_at_datetime(&self) -> Option<DateTime<Utc>> {
+  pub fn updated_at_datetime(&self) -> Option<DateTime<Local>> {
     DateTime::parse_from_rfc3339(&self.updated_at)
       .ok()
-      .map(|dt| dt.with_timezone(&Utc))
+      .map(|dt| dt.with_timezone(&Local))
   }
 }
 
@@ -680,8 +680,8 @@ mod tests {
     let local = SyncManifest {
       version: 1,
       profile_id: "test".to_string(),
-      generated_at: Utc::now().to_rfc3339(),
-      updated_at: Utc::now().to_rfc3339(),
+      generated_at: Local::now().to_rfc3339(),
+      updated_at: Local::now().to_rfc3339(),
       exclude_globs: vec![],
       files: vec![
         ManifestFileEntry {
@@ -813,8 +813,8 @@ mod tests {
     let local = SyncManifest {
       version: 1,
       profile_id: "test".to_string(),
-      generated_at: Utc::now().to_rfc3339(),
-      updated_at: Utc::now().to_rfc3339(), // NOW — appears newer than remote
+      generated_at: Local::now().to_rfc3339(),
+      updated_at: Local::now().to_rfc3339(), // NOW — appears newer than remote
       exclude_globs: vec![],
       files: vec![],
       encrypted: false,

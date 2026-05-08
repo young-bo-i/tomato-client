@@ -5,7 +5,7 @@ use super::tunnel::VpnTunnel;
 use async_trait::async_trait;
 use boringtun::noise::{Tunn, TunnResult};
 use boringtun::x25519::{PublicKey, StaticSecret};
-use chrono::Utc;
+use chrono::Local;
 use std::net::{SocketAddr, ToSocketAddrs, UdpSocket};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -168,10 +168,10 @@ impl WireGuardTunnel {
             self
               .bytes_sent
               .fetch_add(response.len() as u64, Ordering::Relaxed);
-            self.last_handshake = Some(Utc::now().timestamp());
+            self.last_handshake = Some(Local::now().timestamp());
           }
           TunnResult::Done => {
-            self.last_handshake = Some(Utc::now().timestamp());
+            self.last_handshake = Some(Local::now().timestamp());
           }
           TunnResult::Err(e) => {
             return Err(VpnError::Tunnel(format!(
@@ -293,7 +293,7 @@ impl VpnTunnel for WireGuardTunnel {
     self.handshake().await?;
 
     self.connected.store(true, Ordering::Release);
-    self.connected_at = Some(Utc::now().timestamp());
+    self.connected_at = Some(Local::now().timestamp());
 
     log::info!("[vpn] WireGuard tunnel {} connected", self.vpn_id);
 

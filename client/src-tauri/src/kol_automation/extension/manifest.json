@@ -1,0 +1,39 @@
+{
+  "manifest_version": 3,
+  "name": "Donut KOL Helper",
+  "version": "1.0.2",
+  "description": "DOM-side helper for the Donut KOL automation pipeline. Injects controls on Douyin pages, runs the gather collector, blocks video stream traffic to save bandwidth/RAM, and forwards rows to the Tauri local axum endpoint.",
+  "permissions": [
+    "declarativeNetRequest"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "*://*.douyin.com/*"
+      ],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "host_permissions": [
+    "http://127.0.0.1/*"
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["profile.json"],
+      "matches": ["*://*.douyin.com/*"]
+    }
+  ],
+  "declarative_net_request": {
+    "rule_resources": [
+      {
+        "id": "video_block_ruleset",
+        "enabled": true,
+        "path": "block_rules.json"
+      }
+    ]
+  }
+}

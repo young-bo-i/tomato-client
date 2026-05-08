@@ -438,7 +438,7 @@ impl CamoufoxManager {
     // If not found in in-memory instances, scan system processes
     // This handles the case where the app was restarted but Camoufox is still running
     if let Some((pid, found_profile_path, cdp_port)) =
-      self.find_camoufox_process_by_profile(&target_path)
+      self.find_camoufox_process_by_profile(&target_path).await
     {
       log::info!(
         "Found running Camoufox process (PID: {}) for profile path via system scan",
@@ -472,75 +472,66 @@ impl CamoufoxManager {
   }
 
   /// Scan system processes to find a Camoufox process using a specific profile path
-  fn find_camoufox_process_by_profile(
+  async fn find_camoufox_process_by_profile(
     &self,
     target_path: &std::path::Path,
   ) -> Option<(u32, String, Option<u16>)> {
-    use sysinfo::{ProcessRefreshKind, RefreshKind, System};
+    let target_path = target_path.to_path_buf();
+    let target_path_str = target_path.to_string_lossy().into_owned();
 
-    let system = System::new_with_specifics(
-      RefreshKind::nothing().with_processes(ProcessRefreshKind::everything()),
-    );
+    crate::system_snapshot::with_processes(move |system| {
+      for (pid, process) in system.processes() {
+        let cmd = process.cmd();
+        if cmd.is_empty() {
+          continue;
+        }
 
-    let target_path_str = target_path.to_string_lossy();
+        let exe_name = process.name().to_string_lossy().to_lowercase();
+        let is_firefox_like = exe_name.contains("firefox")
+          || exe_name.contains("camoufox")
+          || exe_name.contains("firefox-bin");
+        if !is_firefox_like {
+          continue;
+        }
 
-    for (pid, process) in system.processes() {
-      let cmd = process.cmd();
-      if cmd.is_empty() {
-        continue;
-      }
+        let mut matched = false;
+        let mut found_profile_path = None;
+        let mut cdp_port: Option<u16> = None;
 
-      // Check if this is a Camoufox/Firefox process
-      let exe_name = process.name().to_string_lossy().to_lowercase();
-      let is_firefox_like = exe_name.contains("firefox")
-        || exe_name.contains("camoufox")
-        || exe_name.contains("firefox-bin");
-
-      if !is_firefox_like {
-        continue;
-      }
-
-      let mut matched = false;
-      let mut found_profile_path = None;
-      let mut cdp_port: Option<u16> = None;
-
-      // Check if the command line contains our profile path
-      for (i, arg) in cmd.iter().enumerate() {
-        if let Some(arg_str) = arg.to_str() {
-          // Check for -profile argument followed by our path
-          if arg_str == "-profile" && i + 1 < cmd.len() {
-            if let Some(next_arg) = cmd.get(i + 1).and_then(|a| a.to_str()) {
-              let cmd_path = std::path::Path::new(next_arg)
-                .canonicalize()
-                .unwrap_or_else(|_| std::path::Path::new(next_arg).to_path_buf());
-
-              if cmd_path == target_path {
-                matched = true;
-                found_profile_path = Some(next_arg.to_string());
+        for (i, arg) in cmd.iter().enumerate() {
+          if let Some(arg_str) = arg.to_str() {
+            if arg_str == "-profile" && i + 1 < cmd.len() {
+              if let Some(next_arg) = cmd.get(i + 1).and_then(|a| a.to_str()) {
+                let cmd_path = std::path::Path::new(next_arg)
+                  .canonicalize()
+                  .unwrap_or_else(|_| std::path::Path::new(next_arg).to_path_buf());
+                if cmd_path == target_path {
+                  matched = true;
+                  found_profile_path = Some(next_arg.to_string());
+                }
               }
             }
-          }
 
-          // Also check if the argument contains the profile path directly
-          if !matched && arg_str.contains(&*target_path_str) {
-            matched = true;
-            found_profile_path = Some(target_path_str.to_string());
-          }
+            if !matched && arg_str.contains(&target_path_str) {
+              matched = true;
+              found_profile_path = Some(target_path_str.clone());
+            }
 
-          if let Some(port_val) = arg_str.strip_prefix("--remote-debugging-port=") {
-            cdp_port = port_val.parse().ok();
+            if let Some(port_val) = arg_str.strip_prefix("--remote-debugging-port=") {
+              cdp_port = port_val.parse().ok();
+            }
+          }
+        }
+
+        if matched {
+          if let Some(profile_path) = found_profile_path {
+            return Some((pid.as_u32(), profile_path, cdp_port));
           }
         }
       }
-
-      if matched {
-        if let Some(profile_path) = found_profile_path {
-          return Some((pid.as_u32(), profile_path, cdp_port));
-        }
-      }
-    }
-
-    None
+      None
+    })
+    .await
   }
 
   /// Check if servers are still alive and clean up dead instances
@@ -585,27 +576,16 @@ impl CamoufoxManager {
 
   /// Check if a Camoufox server is running with the given process ID
   async fn is_server_running(&self, process_id: u32) -> bool {
-    // Check if the process is still running
-    use sysinfo::{Pid, ProcessRefreshKind, RefreshKind, System};
-
-    let system = System::new_with_specifics(
-      RefreshKind::nothing().with_processes(ProcessRefreshKind::everything()),
-    );
-    if let Some(process) = system.process(Pid::from(process_id as usize)) {
-      // Check if this is actually a Camoufox process by looking at the command line
-      let cmd = process.cmd();
-      let is_camoufox = cmd.iter().any(|arg| {
-        let arg_str = arg.to_str().unwrap_or("");
-        arg_str.contains("camoufox-worker") || arg_str.contains("camoufox")
-      });
-
-      if is_camoufox {
-        // Found running Camoufox process
-        return true;
-      }
-    }
-
-    false
+    let pid = sysinfo::Pid::from(process_id as usize);
+    crate::system_snapshot::with_processes(move |system| {
+      system.process(pid).is_some_and(|process| {
+        process.cmd().iter().any(|arg| {
+          let arg_str = arg.to_str().unwrap_or("");
+          arg_str.contains("camoufox-worker") || arg_str.contains("camoufox")
+        })
+      })
+    })
+    .await
   }
 }
 
