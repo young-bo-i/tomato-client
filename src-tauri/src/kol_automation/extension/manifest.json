@@ -31,7 +31,7 @@
     "rule_resources": [
       {
         "id": "video_block_ruleset",
-        "enabled": true,
+        "enabled": false,
         "path": "block_rules.json"
       }
     ]
