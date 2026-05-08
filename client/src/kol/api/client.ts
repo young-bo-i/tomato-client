@@ -33,9 +33,10 @@ import {
   type User,
 } from "../types";
 
-const SERVER_URL_KEY = "kol_server_url";
 const TOKEN_KEY = "kol_token";
-const DEFAULT_SERVER_URL = "http://localhost:8099";
+// Hard-coded production server. Not user-configurable — the desktop
+// client always talks to this single backend.
+const SERVER_URL = "http://211.101.236.27:8099";
 
 // `typeof localStorage` may be "object" in some SSR/Edge contexts while the
 // actual value is a stub missing `.getItem` — check `window` to be safe.
@@ -49,13 +50,11 @@ function safeStorage(): Storage | null {
 }
 
 class KolApi {
-  private serverUrl: string;
+  private readonly serverUrl: string = SERVER_URL;
   private token: string | null;
 
   constructor() {
-    const storage = safeStorage();
-    this.serverUrl = storage?.getItem(SERVER_URL_KEY) || DEFAULT_SERVER_URL;
-    this.token = storage?.getItem(TOKEN_KEY) ?? null;
+    this.token = safeStorage()?.getItem(TOKEN_KEY) ?? null;
   }
 
   get isLoggedIn(): boolean {
@@ -68,11 +67,6 @@ class KolApi {
 
   getToken(): string | null {
     return this.token;
-  }
-
-  setServerUrl(url: string): void {
-    this.serverUrl = url.replace(/\/$/, "");
-    safeStorage()?.setItem(SERVER_URL_KEY, this.serverUrl);
   }
 
   clearToken(): void {

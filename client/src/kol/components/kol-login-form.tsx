@@ -4,7 +4,6 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { kolApi } from "../api/client";
 import { useKolAuth } from "../hooks/use-kol-auth";
 
 interface Props {
@@ -15,7 +14,6 @@ export function KolLoginForm({ onSuccess }: Props) {
   const { login } = useKolAuth();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
-  const [serverUrl, setServerUrl] = useState(kolApi.getServerUrl());
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -27,7 +25,6 @@ export function KolLoginForm({ onSuccess }: Props) {
     setSubmitting(true);
     setError(null);
     try {
-      kolApi.setServerUrl(serverUrl);
       await login({ username, password });
       onSuccess?.();
     } catch (e) {
@@ -39,15 +36,6 @@ export function KolLoginForm({ onSuccess }: Props) {
 
   return (
     <div className="space-y-4">
-      <div className="space-y-2">
-        <Label>服务器地址</Label>
-        <Input
-          value={serverUrl}
-          onChange={(e) => setServerUrl(e.target.value)}
-          placeholder="http://localhost:8099"
-          disabled={submitting}
-        />
-      </div>
       <div className="space-y-2">
         <Label>账号</Label>
         <Input
