@@ -6,6 +6,22 @@ import { fileURLToPath } from "node:url";
 const MANIFEST_DIR = dirname(fileURLToPath(import.meta.url));
 const PROFILE = process.env.PROFILE || "debug";
 
+// Cargo target-dir naming convention: "dev"/"test" → "debug", every
+// other profile (including custom ones like `release-ci`) maps to a
+// directory matching the profile name verbatim. Centralize the mapping
+// so the source-dir lookup + the cargo CLI args stay in sync.
+const PROFILE_DIR =
+  PROFILE === "dev" || PROFILE === "test" ? "debug" : PROFILE;
+
+// Translate profile name to cargo CLI args. `--release` is a legacy
+// alias for `--profile release`; for any other custom profile we pass
+// `--profile <name>` explicitly.
+function profileToCargoArgs(profile) {
+  if (profile === "debug" || profile === "dev") return [];
+  if (profile === "release") return ["--release"];
+  return ["--profile", profile];
+}
+
 function getTarget() {
   if (process.env.TARGET) return process.env.TARGET;
   try {
@@ -29,12 +45,13 @@ const TARGET = getTarget();
 const HOST_TARGET = getHostTarget();
 const isWindows = TARGET.includes("windows");
 
-// Determine source directory
+// Determine source directory using PROFILE_DIR (handles dev/test→debug
+// and custom profiles like release-ci verbatim).
 let srcDir;
 if (TARGET === HOST_TARGET || TARGET === "unknown") {
-  srcDir = join(MANIFEST_DIR, "target", PROFILE === "release" ? "release" : "debug");
+  srcDir = join(MANIFEST_DIR, "target", PROFILE_DIR);
 } else {
-  srcDir = join(MANIFEST_DIR, "target", TARGET, PROFILE === "release" ? "release" : "debug");
+  srcDir = join(MANIFEST_DIR, "target", TARGET, PROFILE_DIR);
 }
 
 const destDir = join(MANIFEST_DIR, "binaries");
@@ -55,8 +72,7 @@ function copyBinary(baseName) {
     console.log(`Warning: Binary not found at ${source}`);
     console.log(`Building ${baseName} binary...`);
 
-    const buildArgs = ["build", "--bin", baseName];
-    if (PROFILE === "release") buildArgs.push("--release");
+    const buildArgs = ["build", "--bin", baseName, ...profileToCargoArgs(PROFILE)];
     if (TARGET !== "unknown" && TARGET !== HOST_TARGET) {
       buildArgs.push("--target", TARGET);
     }

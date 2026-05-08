@@ -179,6 +179,23 @@ lto = "thin"
 # Split debuginfo on macOS for faster linking (ignored on other platforms)
 split-debuginfo = "unpacked"
 
+# CI 专用 release profile。`release` 那套 codegen-units=1 + lto=thin 是
+# 给最终用户分发优化的(包小、运行快),但**编译时间能多 2-3 倍**:
+#   * codegen-units=1 → 所有 crate 串行编译,机器多核也用不上
+#   * lto=thin → 链接阶段还要做整体优化分析,即使 target 缓存命中
+#                 也得每次重做(~2-5 分钟)
+#
+# release-ci 关掉这两个,GitHub Actions 上能省 30-50% 编译时间。出来
+# 的二进制大几十 MB、运行慢 10% 左右 — 对 KOL 这种 IO/UI bound 的
+# 工具,运行差距完全感知不到。
+#
+# Tauri build 用 `--profile release-ci`;手动 cargo build sidecar 也
+# 用 `--profile release-ci`。target/{target}/release-ci/ 是产物路径。
+[profile.release-ci]
+inherits = "release"
+codegen-units = 16
+lto = false
+
 [profile.test]
 # Optimize test builds for faster compilation
 codegen-units = 256
