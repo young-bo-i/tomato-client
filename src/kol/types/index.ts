@@ -339,6 +339,24 @@ export interface KolConfigUpdate {
   daily_limit: number;
 }
 
+/** Admin-only: row in `kol_submission_config_defaults`. Used as the
+ * initial value when a new tomato/qimao profile is created. Editing
+ * here does NOT touch existing per-profile configs. */
+export interface KolConfigDefault {
+  platform: string;
+  alias_type: number;
+  enabled: boolean;
+  daily_limit: number;
+  updated_at: string;
+}
+
+export interface KolConfigDefaultUpdate {
+  platform: string;
+  alias_type: number;
+  enabled: boolean;
+  daily_limit: number;
+}
+
 /** Read shape of `/api/admin/settings`. Singleton row of global runtime
  * knobs. Currently exposes `admin_contribution_pct`. */
 export interface AdminSettings {

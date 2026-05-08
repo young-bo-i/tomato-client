@@ -88,7 +88,7 @@ export function KolSubmissionConfigPanel() {
     setLoading(true);
     setError(null);
     try {
-      const data = await kolApi.listKolConfig();
+      const data = await kolApi.listMyKolConfig();
       setProfiles(data);
       setLocal(buildLocal(data));
       setDirty(false);
@@ -124,7 +124,7 @@ export function KolSubmissionConfigPanel() {
   async function handleSave() {
     setSaving(true);
     try {
-      await kolApi.updateKolConfig(buildUpdates(local, profiles));
+      await kolApi.updateMyKolConfig(buildUpdates(local, profiles));
       setDirty(false);
       setSaved(true);
       setTimeout(() => setSaved(false), 2000);
@@ -150,9 +150,10 @@ export function KolSubmissionConfigPanel() {
       {/* 操作栏 */}
       <div className="flex items-center justify-between gap-2">
         <div>
-          <h3 className="text-sm font-semibold">提交词配置</h3>
+          <h3 className="text-sm font-semibold">我的提交词配置</h3>
           <p className="text-xs text-muted-foreground mt-0.5">
-            每个账号每个类型独立开关和每日限额（0 = 无限制）。词投满时溢出到管理员账号，全部满则丢弃。
+            管理我自己的番茄/七猫账号:每个账号每个类型独立开关 + 每日限额(0 = 无限制)。
+            词投满时按管理员/上级/我的池子的优先级回退,全部满才丢弃。
           </p>
         </div>
         <div className="flex items-center gap-2 shrink-0">

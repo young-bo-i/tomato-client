@@ -6,9 +6,12 @@ import { useMemo, useState } from "react";
 import { useKolAuth } from "../hooks/use-kol-auth";
 import { KolDomDumpPanel } from "./kol-dom-dump-panel";
 import { KolDouyinVideosPanel } from "./kol-douyin-videos-panel";
+import { KolIncomePanel } from "./kol-income-panel";
 import { KolPasswordChangeButton } from "./kol-password-change-dialog";
+import { KolQimaoNoticePanel } from "./kol-qimao-notice-panel";
 import { KolQimaoStatsPanel } from "./kol-qimao-stats-panel";
 import { KolSideNav, type NavGroup } from "./kol-side-nav";
+import { KolSubmissionConfigPanel } from "./kol-submission-config-panel";
 import { KolTeamSettingsPanel } from "./kol-team-settings-panel";
 import { KolTomatoStatsPanel } from "./kol-tomato-stats-panel";
 
@@ -19,6 +22,17 @@ const COMMON_GROUPS: NavGroup[] = [
       { value: "dom-dump", label: "采集控制" },
       { value: "douyin-videos", label: "抖音视频" },
     ],
+  },
+  {
+    label: "我的账号池",
+    items: [
+      { value: "my-income", label: "番茄收益" },
+      { value: "my-qimao-notice", label: "七猫收益通知" },
+    ],
+  },
+  {
+    label: "我的配置",
+    items: [{ value: "my-submission-config", label: "我的提交词配置" }],
   },
 ];
 
@@ -107,6 +121,9 @@ export function KolMainPanel() {
         <div className="flex-1 overflow-auto p-4">
           {active === "dom-dump" && <KolDomDumpPanel />}
           {active === "douyin-videos" && <KolDouyinVideosPanel />}
+          {active === "my-income" && <KolIncomePanel />}
+          {active === "my-qimao-notice" && <KolQimaoNoticePanel />}
+          {active === "my-submission-config" && <KolSubmissionConfigPanel />}
           {showTeamGroup && active === "team-contribution" && (
             <KolTeamSettingsPanel />
           )}
