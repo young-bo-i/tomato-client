@@ -11,7 +11,7 @@ use axum::{
   http::{HeaderMap, StatusCode},
   middleware::{self, Next},
   response::{Json, Response},
-  routing::get,
+  routing::{get, post},
   Router,
 };
 use lazy_static::lazy_static;
@@ -84,8 +84,8 @@ pub struct UpdateProfileRequest {
 }
 
 #[derive(Clone)]
-struct ApiServerState {
-  app_handle: tauri::AppHandle,
+pub struct ApiServerState {
+  pub app_handle: tauri::AppHandle,
 }
 
 #[derive(Debug, Serialize, Deserialize, ToSchema)]
@@ -339,9 +339,35 @@ impl ApiServer {
       .route("/events", get(ws_handler))
       .with_state(ws_state);
 
+    // KOL helper-extension ingest. The endpoint is bound only to
+    // 127.0.0.1, so the threat surface is local processes. We
+    // intentionally do NOT gate on Origin/Bearer here — Chromium
+    // service-worker fetches to localhost don't reliably attach the
+    // chrome-extension:// origin, and adding a shared secret would
+    // require shipping it inside the extension which is read-only to
+    // anyone with file access anyway. Trust the local socket.
+    // `/kol-ext` shares state type with the v1 routes so axum's
+    // `.nest()` is happy. handle_state extracts AppHandle out of it for
+    // the unauth-watchdog kill path; other handlers ignore the state.
+    let kol_ext_routes: Router<ApiServerState> = Router::new()
+      .route("/health", get(|| async { "ok" }))
+      .route(
+        "/gather/bulk",
+        post(crate::kol_automation::ingest::handle_bulk),
+      )
+      .route(
+        "/gather/should",
+        get(crate::kol_automation::ingest::handle_should),
+      )
+      .route(
+        "/state",
+        post(crate::kol_automation::ingest::handle_state),
+      );
+
     let app = Router::new()
       .merge(v1_routes)
       .nest("/ws", ws_routes)
+      .nest("/kol-ext", kol_ext_routes)
       .route("/openapi.json", get(move || async move { Json(api) }))
       .layer(CorsLayer::permissive())
       .with_state(state);
@@ -612,6 +638,9 @@ async fn create_profile(
       request.group_id.clone(),
       false,
       None,
+      None, // kol_platform — only set from the UI
+      None, // qimao_identifier — only set from the UI
+      None, // qimao_credential — only set from the UI
     )
     .await
   {

@@ -6,6 +6,8 @@ import { CustomThemeProvider } from "@/components/theme-provider";
 import { Toaster } from "@/components/ui/sonner";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { WindowDragArea } from "@/components/window-drag-area";
+import { KolAuthGate } from "@/kol/components/kol-auth-gate";
+import { KolAuthProvider } from "@/kol/hooks/use-kol-auth";
 import { setupLogging } from "@/lib/logger";
 
 export function ClientProviders({ children }: { children: React.ReactNode }) {
@@ -17,7 +19,11 @@ export function ClientProviders({ children }: { children: React.ReactNode }) {
     <I18nProvider>
       <CustomThemeProvider>
         <WindowDragArea />
-        <TooltipProvider>{children}</TooltipProvider>
+        <TooltipProvider>
+          <KolAuthProvider>
+            <KolAuthGate>{children}</KolAuthGate>
+          </KolAuthProvider>
+        </TooltipProvider>
         <Toaster />
       </CustomThemeProvider>
     </I18nProvider>

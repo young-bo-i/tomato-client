@@ -108,7 +108,7 @@ impl SyncClient {
       .json(&DeleteRequest {
         key: key.to_string(),
         tombstone_key: tombstone_key.map(|s| s.to_string()),
-        deleted_at: Some(chrono::Utc::now().to_rfc3339()),
+        deleted_at: Some(chrono::Local::now().to_rfc3339()),
       })
       .send()
       .await
@@ -331,7 +331,7 @@ impl SyncClient {
       .json(&DeletePrefixRequest {
         prefix: prefix.to_string(),
         tombstone_key: tombstone_key.map(|s| s.to_string()),
-        deleted_at: Some(chrono::Utc::now().to_rfc3339()),
+        deleted_at: Some(chrono::Local::now().to_rfc3339()),
       })
       .send()
       .await

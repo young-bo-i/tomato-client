@@ -17,6 +17,16 @@ pub mod chrome_decrypt {
   type Aes128CbcDec = cbc::Decryptor<aes::Aes128>;
   type Aes128CbcEnc = cbc::Encryptor<aes::Aes128>;
 
+  // Chromium uses different PBKDF2 iteration counts per platform:
+  //   macOS:  1003 (paired with the Keychain "Chromium Safe Storage" password)
+  //   Linux:  1   (paired with `peanuts` legacy password or os_crypt_key file)
+  // The value here was previously hardcoded to 1, which silently produced
+  // the wrong key on macOS and made every cookie decrypt fail (the AES
+  // step would still "succeed" but the resulting plaintext was random
+  // bytes that String::from_utf8 then rejected → empty value).
+  #[cfg(target_os = "macos")]
+  const PBKDF2_ITERATIONS: u32 = 1003;
+  #[cfg(not(target_os = "macos"))]
   const PBKDF2_ITERATIONS: u32 = 1;
   const KEY_LEN: usize = 16; // AES-128
   const SALT: &[u8] = b"saltysalt";
@@ -87,20 +97,46 @@ pub mod chrome_decrypt {
       .decrypt_padded_mut::<Pkcs7>(&mut buf)
       .ok()?;
 
+    // Chrome 80+ prepends a 32-byte SHA256(host_key) tamper-detection
+    // hash before the actual cookie value. We don't have the host_key
+    // here, but the value after byte 32 should be valid UTF-8. If it is,
+    // that's our cookie value. Fall back to no-strip for older cookies
+    // that don't have the prefix.
+    if decrypted.len() >= 32 {
+      if let Ok(s) = std::str::from_utf8(&decrypted[32..]) {
+        return Some(s.to_string());
+      }
+    }
     String::from_utf8(decrypted.to_vec()).ok()
   }
 
-  /// Encrypt a cookie value in Chrome format (v10/v11 prefix + AES-128-CBC).
-  pub fn encrypt(plaintext: &str, key: &[u8; KEY_LEN]) -> Vec<u8> {
+  /// Encrypt a cookie value in Chrome format. Output layout:
+  ///
+  ///     "v10" || AES-128-CBC( SHA256(host_key) || plaintext )
+  ///
+  /// Chrome 80+ verifies the SHA256 prefix matches the host on read; if
+  /// it doesn't, the cookie is treated as tampered/garbage and silently
+  /// ignored — which manifests as "logged out" after a state restore.
+  pub fn encrypt(plaintext: &str, host_key: &str, key: &[u8; KEY_LEN]) -> Vec<u8> {
+    use sha2::{Digest, Sha256};
+
+    let host_hash = Sha256::digest(host_key.as_bytes());
     let pt = plaintext.as_bytes();
+
+    // Payload to encrypt = 32-byte SHA256 prefix + plaintext bytes.
+    let mut payload = Vec::with_capacity(32 + pt.len());
+    payload.extend_from_slice(&host_hash);
+    payload.extend_from_slice(pt);
+
     let block_size = 16usize;
-    // Allocate buffer with space for PKCS7 padding (up to one extra block)
-    let padded_len = pt.len() + (block_size - pt.len() % block_size);
+    let payload_len = payload.len();
+    // PKCS7 padding adds 1..=block_size bytes.
+    let padded_len = payload_len + (block_size - payload_len % block_size);
     let mut buf = vec![0u8; padded_len];
-    buf[..pt.len()].copy_from_slice(pt);
+    buf[..payload_len].copy_from_slice(&payload);
 
     let encrypted = Aes128CbcEnc::new(key.into(), &IV.into())
-      .encrypt_padded_mut::<Pkcs7>(&mut buf, pt.len())
+      .encrypt_padded_mut::<Pkcs7>(&mut buf, payload_len)
       .expect("encryption buffer too small");
 
     let mut result = Vec::with_capacity(3 + encrypted.len());
@@ -415,7 +451,10 @@ impl CookieManager {
     for cookie in cookies {
       // Prepare value/encrypted_value based on whether we have an encryption key
       let (value_str, encrypted_bytes): (&str, Vec<u8>) = match encryption_key {
-        Some(key) => ("", chrome_decrypt::encrypt(&cookie.value, key)),
+        // Chrome's decrypt expects: SHA256(host_key) || plaintext.
+        // The host_key is the cookie's domain field exactly as stored
+        // by Chrome (leading dot included for wildcard cookies).
+        Some(key) => ("", chrome_decrypt::encrypt(&cookie.value, &cookie.domain, key)),
         None => (cookie.value.as_str(), Vec::new()),
       };
 
@@ -532,6 +571,39 @@ impl CookieManager {
       domains,
       total_count,
     })
+  }
+
+  /// Inverse of `read_cookies` — write a flat list of cookies into the
+  /// profile's cookie DB. The browser MUST be stopped (otherwise SQLite
+  /// is locked). If the profile is a Chromium type with a per-profile
+  /// `os_crypt_key` available, each cookie is re-encrypted with it; if
+  /// the key is missing, values are stored as plaintext and Chrome will
+  /// recreate them on next read.
+  pub fn write_cookies_to_profile(
+    profile_id: &str,
+    cookies: &[UnifiedCookie],
+  ) -> Result<(usize, usize), String> {
+    let profile_manager = ProfileManager::instance();
+    let profiles_dir = profile_manager.get_profiles_dir();
+    let profiles = profile_manager
+      .list_profiles()
+      .map_err(|e| format!("Failed to list profiles: {e}"))?;
+
+    let profile = profiles
+      .iter()
+      .find(|p| p.id.to_string() == profile_id)
+      .ok_or_else(|| format!("Profile not found: {profile_id}"))?;
+
+    let db_path = Self::get_cookie_db_path(profile, &profiles_dir)?;
+
+    match profile.browser.as_str() {
+      "camoufox" => Self::write_firefox_cookies(&db_path, cookies),
+      "wayfern" => {
+        let key = Self::get_chrome_encryption_key(profile, &profiles_dir);
+        Self::write_chrome_cookies(&db_path, cookies, key.as_ref())
+      }
+      _ => Err(format!("Unsupported browser type: {}", profile.browser)),
+    }
   }
 
   /// Public API: Copy cookies between profiles

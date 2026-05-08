@@ -89,6 +89,7 @@ import type {
   TrafficSnapshot,
   VpnConfig,
 } from "@/types";
+import { KOL_PLATFORM_LABELS } from "@/types";
 import { BandwidthMiniChart } from "./bandwidth-mini-chart";
 import {
   DataTableActionBar,
@@ -1186,11 +1187,39 @@ export function ProfilesDataTable({
     };
 
     void fetchTrafficSnapshots();
-    const interval = setInterval(() => {
-      void fetchTrafficSnapshots();
-    }, 1000);
+    // Poll every 2 s. Traffic-condition tiles don't need sub-second
+    // precision and the previous 1 s tick was the heaviest steady-state
+    // Tauri invoke in the app whenever any browser was running. The
+    // visibility hook below pauses polling when the window is hidden.
+    let timer: ReturnType<typeof setInterval> | null = null;
+    const TRAFFIC_POLL_MS = 2000;
+
+    const start = () => {
+      if (timer !== null) return;
+      timer = setInterval(() => {
+        void fetchTrafficSnapshots();
+      }, TRAFFIC_POLL_MS);
+    };
+    const stop = () => {
+      if (timer !== null) {
+        clearInterval(timer);
+        timer = null;
+      }
+    };
+    const onVisibility = () => {
+      if (document.visibilityState === "visible") {
+        void fetchTrafficSnapshots();
+        start();
+      } else {
+        stop();
+      }
+    };
+
+    if (document.visibilityState === "visible") start();
+    document.addEventListener("visibilitychange", onVisibility);
     return () => {
-      clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisibility);
+      stop();
     };
   }, [browserState.isClient, runningCount, runningProfileIds]);
 
@@ -2103,6 +2132,15 @@ export function ProfilesDataTable({
               >
                 {display}
               </button>
+              <Badge
+                variant="secondary"
+                className="px-1.5 py-0 text-[10px] leading-tight"
+              >
+                {profile.kol_platform &&
+                profile.kol_platform in KOL_PLATFORM_LABELS
+                  ? KOL_PLATFORM_LABELS[profile.kol_platform]
+                  : "其他"}
+              </Badge>
               {isLocked && (
                 <Tooltip>
                   <TooltipTrigger asChild>

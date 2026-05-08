@@ -3,14 +3,7 @@ import { useTranslation } from "react-i18next";
 import { FaDownload } from "react-icons/fa";
 import { FiWifi } from "react-icons/fi";
 import { GoGear, GoKebabHorizontal, GoPlus } from "react-icons/go";
-import {
-  LuCloud,
-  LuPlug,
-  LuPuzzle,
-  LuSearch,
-  LuUsers,
-  LuX,
-} from "react-icons/lu";
+import { LuPlug, LuPuzzle, LuSearch, LuUsers, LuX } from "react-icons/lu";
 import { cn } from "@/lib/utils";
 import { Logo } from "./icons/logo";
 import { Button } from "./ui/button";
@@ -172,10 +165,12 @@ interface Props {
   onGroupManagementDialogOpen: (open: boolean) => void;
   onImportProfileDialogOpen: (open: boolean) => void;
   onCreateProfileDialogOpen: (open: boolean) => void;
-  onSyncConfigDialogOpen: (open: boolean) => void;
+  /** No longer wired to any menu entry — kept for backwards compatibility
+   *  with existing callers; safe to drop once all sync config entry points
+   *  have been removed from child components. */
+  onSyncConfigDialogOpen?: (open: boolean) => void;
   onIntegrationsDialogOpen: (open: boolean) => void;
   onExtensionManagementDialogOpen: (open: boolean) => void;
-  onKolDialogOpen?: (open: boolean) => void;
   searchQuery: string;
   onSearchQueryChange: (query: string) => void;
 }
@@ -186,10 +181,8 @@ const HomeHeader = ({
   onGroupManagementDialogOpen,
   onImportProfileDialogOpen,
   onCreateProfileDialogOpen,
-  onSyncConfigDialogOpen,
   onIntegrationsDialogOpen,
   onExtensionManagementDialogOpen,
-  onKolDialogOpen,
   searchQuery,
   onSearchQueryChange,
 }: Props) => {
@@ -285,16 +278,7 @@ const HomeHeader = ({
             </span>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
-            {onKolDialogOpen && (
-              <DropdownMenuItem
-                onClick={() => {
-                  onKolDialogOpen(true);
-                }}
-              >
-                <GoGear className="mr-2 w-4 h-4" />
-                KOL 工作台
-              </DropdownMenuItem>
-            )}
+            {/* KOL 工作台 menu entry removed — it's a top-level page tab now. */}
             <DropdownMenuItem
               onClick={() => {
                 onSettingsDialogOpen(true);
@@ -327,14 +311,9 @@ const HomeHeader = ({
               <LuPuzzle className="mr-2 w-4 h-4" />
               {t("header.menu.extensions")}
             </DropdownMenuItem>
-            <DropdownMenuItem
-              onClick={() => {
-                onSyncConfigDialogOpen(true);
-              }}
-            >
-              <LuCloud className="mr-2 w-4 h-4" />
-              {t("header.menu.syncService")}
-            </DropdownMenuItem>
+            {/* Sync Service (Donut Cloud) entry — hidden. We use the KOL
+                account system for profile sync; this menu item only led to
+                Donut Cloud sign-up which is not relevant to our users. */}
             <DropdownMenuItem
               onClick={() => {
                 onIntegrationsDialogOpen(true);

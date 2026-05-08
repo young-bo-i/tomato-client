@@ -2267,6 +2267,25 @@ pub async fn launch_browser_profile(
     profile_for_launch.id
   );
 
+  // For douyin profiles, ensure the local axum server is up *before*
+  // the browser launches — the helper extension's service worker
+  // expects to find it on 127.0.0.1:10108 from first navigation. We
+  // run this from launch_browser_profile (not wayfern_manager) to keep
+  // module dependencies acyclic.
+  if profile_for_launch.kol_platform.as_deref() == Some("douyin") {
+    let app = app_handle.clone();
+    tokio::spawn(async move {
+      if let Err(e) = crate::kol_automation::ingest::ensure_api_server_started(&app).await {
+        log::warn!("kol-ext local axum start failed: {e}");
+      }
+    });
+  }
+
+  // Pull latest cookie/localStorage snapshot from the tomato-server and
+  // inject into this profile's data dir before the browser starts. Failures
+  // are logged as warnings — we don't want a server hiccup to block launch.
+  crate::state_sync::pull_before_launch(profile_for_launch.id).await;
+
   // Always start a local proxy before launching (non-Camoufox/Wayfern handled here; they have their own flow)
   // This ensures all traffic goes through the local proxy for monitoring and future features
   if profile.browser != "camoufox" && profile.browser != "wayfern" {
@@ -2414,6 +2433,10 @@ pub async fn launch_browser_profile(
     let _ = PROXY_MANAGER.update_proxy_pid(1u32, actual_pid);
   }
 
+  // Browser is up and running — start the periodic cookie sync timer.
+  // (Cancelled in `kill_browser_profile`.)
+  crate::state_sync::start_periodic_push(updated_profile.id);
+
   Ok(updated_profile)
 }
 
@@ -2437,6 +2460,10 @@ pub async fn kill_browser_profile(
     profile.id
   );
 
+  // Stop the periodic state push BEFORE killing the browser so we don't
+  // race against the browser shutting down its SQLite WAL.
+  crate::state_sync::stop_periodic_push(profile.id);
+
   let browser_runner = BrowserRunner::instance();
 
   match browser_runner
@@ -2459,6 +2486,10 @@ pub async fn kill_browser_profile(
           .mark_profile_stopped(&profile.id.to_string())
           .await;
       }
+
+      // Browser process is gone, SQLite locks released — extract the final
+      // cookie state and push to tomato-server so other devices can see it.
+      crate::state_sync::push_after_close(profile.id).await;
 
       // Auto-update non-running profiles and cleanup unused binaries
       let browser_for_update = profile.browser.clone();

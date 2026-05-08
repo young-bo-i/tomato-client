@@ -1,355 +1,351 @@
-/**
- * Tomato KOL Server API Client
- *
- * Handles all communication with the tomato-server backend.
- * Token is stored in localStorage and attached to every request.
- */
-
-import type {
-  ApiResponse,
-  LoginRequest,
-  LoginResponse,
-  AccountInfo,
-  CreateAccountRequest,
-  KolAccount,
-  KolAccountBase,
-  DouYinAccount,
-  DouYinAccountBase,
-  QiMaoAccount,
-  SubmitBrushTaskRequest,
-  TaskDataGrid,
-  TaskSummary,
-  TaskQueryRequest,
-  RecentTaskPoint,
-  KolIncome,
-  FrequencyPoint,
-  KolBook,
-  CommonSetting,
-  DomConfig,
-  IncomeNotice,
-  ServerBrowserProfile,
+import {
+  type AdminSettings,
+  type AdminSettingsUpdate,
+  type IncomeOverview,
+  type IncomeRow,
+  type MyTier2ContributionUpdate,
+  type QimaoNoticeRow,
+  ApiError,
+  type ApiLogDeleteRequest,
+  type ApiLogMarkRequest,
+  type ApiLogQuery,
+  type CreateUserRequest,
+  type DouyinVideo,
+  type EmailSettings,
+  type EmailSettingsUpdate,
+  type EmailTestResult,
+  type JobRun,
+  type JobSummary,
+  type ListDouyinVideosQuery,
+  type LoginRequest,
+  type LoginResponse,
+  type PagedApiLog,
+  type QimaoBook,
+  type QimaoBooksRefreshResult,
+  type QimaoStatsAccount,
+  type QimaoStatsOverview,
+  type QimaoTokenResult,
+  type TomatoBook,
+  type TomatoBooksRefreshResult,
+  type TomatoStatsAccount,
+  type TomatoStatsOverview,
+  type UpdateUserRequest,
+  type User,
 } from "../types";
 
-const TOKEN_KEY = "kol_auth_token";
 const SERVER_URL_KEY = "kol_server_url";
+const TOKEN_KEY = "kol_token";
 const DEFAULT_SERVER_URL = "http://localhost:8099";
 
-class KolApiClient {
-  private get baseUrl(): string {
-    if (typeof window !== "undefined") {
-      return localStorage.getItem(SERVER_URL_KEY) || DEFAULT_SERVER_URL;
-    }
-    return DEFAULT_SERVER_URL;
-  }
-
-  private get token(): string | null {
-    if (typeof window !== "undefined") {
-      return localStorage.getItem(TOKEN_KEY);
-    }
+// `typeof localStorage` may be "object" in some SSR/Edge contexts while the
+// actual value is a stub missing `.getItem` — check `window` to be safe.
+function safeStorage(): Storage | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return window.localStorage ?? null;
+  } catch {
     return null;
   }
+}
 
-  setServerUrl(url: string) {
-    localStorage.setItem(SERVER_URL_KEY, url);
-  }
+class KolApi {
+  private serverUrl: string;
+  private token: string | null;
 
-  setToken(token: string) {
-    localStorage.setItem(TOKEN_KEY, token);
-  }
-
-  clearToken() {
-    localStorage.removeItem(TOKEN_KEY);
+  constructor() {
+    const storage = safeStorage();
+    this.serverUrl = storage?.getItem(SERVER_URL_KEY) || DEFAULT_SERVER_URL;
+    this.token = storage?.getItem(TOKEN_KEY) ?? null;
   }
 
   get isLoggedIn(): boolean {
-    return !!this.token;
+    return this.token !== null;
+  }
+
+  getServerUrl(): string {
+    return this.serverUrl;
+  }
+
+  getToken(): string | null {
+    return this.token;
+  }
+
+  setServerUrl(url: string): void {
+    this.serverUrl = url.replace(/\/$/, "");
+    safeStorage()?.setItem(SERVER_URL_KEY, this.serverUrl);
+  }
+
+  clearToken(): void {
+    this.token = null;
+    safeStorage()?.removeItem(TOKEN_KEY);
+  }
+
+  private setToken(token: string): void {
+    this.token = token;
+    safeStorage()?.setItem(TOKEN_KEY, token);
   }
 
   private async request<T>(
     method: string,
     path: string,
     body?: unknown,
-  ): Promise<ApiResponse<T>> {
-    const headers: Record<string, string> = {
-      "Content-Type": "application/json",
-    };
-    if (this.token) {
-      headers["Authorization"] = `Bearer ${this.token}`;
-    }
+  ): Promise<T> {
+    const headers: Record<string, string> = {};
+    if (body !== undefined) headers["Content-Type"] = "application/json";
+    if (this.token) headers.Authorization = `Bearer ${this.token}`;
 
-    const res = await fetch(`${this.baseUrl}/api/v1${path}`, {
+    const res = await fetch(`${this.serverUrl}${path}`, {
       method,
       headers,
-      body: body ? JSON.stringify(body) : undefined,
+      body: body === undefined ? undefined : JSON.stringify(body),
     });
 
     if (res.status === 401) {
       this.clearToken();
-      throw new Error("Unauthorized - please login again");
+      throw new ApiError(401, "未登录或登录已过期");
     }
+    if (res.status === 204) return undefined as T;
 
-    return res.json();
-  }
+    const text = await res.text();
+    const parsed = text ? (JSON.parse(text) as unknown) : null;
 
-  private get<T>(path: string) {
-    return this.request<T>("GET", path);
+    if (!res.ok) {
+      const message =
+        parsed &&
+        typeof parsed === "object" &&
+        "error" in parsed &&
+        typeof (parsed as { error: unknown }).error === "string"
+          ? (parsed as { error: string }).error
+          : `HTTP ${res.status}`;
+      throw new ApiError(res.status, message);
+    }
+    return parsed as T;
   }
-  private post<T>(path: string, body?: unknown) {
-    return this.request<T>("POST", path, body);
-  }
-  private put<T>(path: string, body?: unknown) {
-    return this.request<T>("PUT", path, body);
-  }
-  private del<T>(path: string) {
-    return this.request<T>("DELETE", path);
-  }
-
-  // ======================== Auth ========================
 
   async login(req: LoginRequest): Promise<LoginResponse> {
-    const res = await this.post<LoginResponse>("/auth/login", req);
-    if (res.success && res.data) {
-      this.setToken(res.data.token);
-      return res.data;
-    }
-    throw new Error(res.message || "Login failed");
+    const res = await this.request<LoginResponse>(
+      "POST",
+      "/api/auth/login",
+      req,
+    );
+    this.setToken(res.token);
+    return res;
   }
 
-  async healthCheck(): Promise<boolean> {
-    const res = await this.get<unknown>("/auth/test");
-    return res.success;
+  me(): Promise<User> {
+    return this.request<User>("GET", "/api/auth/me");
   }
 
-  async getVersion(): Promise<string> {
-    const res = await this.get<string>("/auth/version");
-    return res.data || "unknown";
+  listUsers(): Promise<User[]> {
+    return this.request<User[]>("GET", "/api/admin/users");
   }
 
-  // ======================== Account ========================
-
-  async getAccountInfo(): Promise<AccountInfo> {
-    const res = await this.get<AccountInfo>("/account");
-    return res.data!;
+  createUser(req: CreateUserRequest): Promise<User> {
+    return this.request<User>("POST", "/api/admin/users", req);
   }
 
-  async createSubAccount(req: CreateAccountRequest): Promise<{ id: number }> {
-    const res = await this.post<{ id: number }>("/account/create", req);
-    return res.data!;
+  updateUser(id: number, req: UpdateUserRequest): Promise<User> {
+    return this.request<User>("PATCH", `/api/admin/users/${id}`, req);
   }
 
-  async getSubAccounts(): Promise<AccountInfo[]> {
-    const res = await this.get<AccountInfo[]>("/account/subs");
-    return res.data || [];
+  deleteUser(id: number): Promise<void> {
+    return this.request<void>("DELETE", `/api/admin/users/${id}`);
   }
 
-  async renewAccount(id: number): Promise<void> {
-    await this.post(`/account/${id}/renew`);
+  listJobs(): Promise<JobSummary[]> {
+    return this.request<JobSummary[]>("GET", "/api/admin/jobs");
   }
 
-  async disableAccount(id: number): Promise<void> {
-    await this.post(`/account/${id}/disable`);
+  getJobHistory(jobName: string, limit = 50): Promise<JobRun[]> {
+    return this.request<JobRun[]>(
+      "GET",
+      `/api/admin/jobs/${encodeURIComponent(jobName)}/history?limit=${limit}`,
+    );
   }
 
-  async enableAccount(id: number): Promise<void> {
-    await this.post(`/account/${id}/enable`);
+  listTomatoBooks(): Promise<TomatoBook[]> {
+    return this.request<TomatoBook[]>("GET", "/api/tomato/books");
   }
 
-  // ======================== KOL Account ========================
-
-  async submitKolCookies(cookies: string, uid?: string, remark?: string): Promise<{ id: number }> {
-    const res = await this.post<{ id: number }>("/kol/cookies", {
-      cookies, uid, identity_name: undefined, remark,
-    });
-    return res.data!;
+  refreshTomatoBooks(): Promise<TomatoBooksRefreshResult> {
+    return this.request<TomatoBooksRefreshResult>(
+      "POST",
+      "/api/tomato/books/refresh",
+    );
   }
 
-  async updateKolCookies(id: number, cookies: string): Promise<void> {
-    await this.put("/kol/cookies", { id, cookies });
+  listQimaoBooks(): Promise<QimaoBook[]> {
+    return this.request<QimaoBook[]>("GET", "/api/qimao/books");
   }
 
-  async getKolAccounts(): Promise<KolAccount[]> {
-    const res = await this.get<KolAccount[]>("/kol/list");
-    return res.data || [];
+  refreshQimaoBooks(): Promise<QimaoBooksRefreshResult> {
+    return this.request<QimaoBooksRefreshResult>(
+      "POST",
+      "/api/qimao/books/refresh",
+    );
   }
 
-  async getKolBaseInfos(): Promise<KolAccountBase[]> {
-    const res = await this.get<KolAccountBase[]>("/kol/base");
-    return res.data || [];
+  /// Manually trigger a `/user/signin` call against the profile's
+  /// stored credentials and persist the resulting `x-qm-devops-token`.
+  /// The server's qimao_token_refresh worker also does this every 12h —
+  /// this endpoint is the "I changed my password, refresh now" hatch.
+  refreshQimaoToken(profileId: string): Promise<QimaoTokenResult> {
+    return this.request<QimaoTokenResult>(
+      "POST",
+      `/api/profiles/${profileId}/qimao_refresh_token`,
+    );
   }
 
-  async getKolById(id: number): Promise<KolAccount> {
-    const res = await this.get<KolAccount>(`/kol/${id}`);
-    return res.data!;
+  getEmailSettings(): Promise<EmailSettings> {
+    return this.request<EmailSettings>("GET", "/api/admin/email_settings");
   }
 
-  async deleteKolAccount(id: number): Promise<void> {
-    await this.del(`/kol/${id}`);
+  updateEmailSettings(payload: EmailSettingsUpdate): Promise<{ ok: boolean }> {
+    return this.request<{ ok: boolean }>(
+      "PUT",
+      "/api/admin/email_settings",
+      payload,
+    );
   }
 
-  async updateKolRemark(id: number, remark: string): Promise<void> {
-    await this.put(`/kol/${id}/remark`, { remark });
+  /// Synchronously sends a one-off test email. `to` overrides the
+  /// configured recipients[0]; pass undefined to use the default.
+  sendTestEmail(to?: string): Promise<EmailTestResult> {
+    return this.request<EmailTestResult>(
+      "POST",
+      "/api/admin/email_settings/test",
+      { to },
+    );
   }
 
-  async getInviteCodes(): Promise<unknown[]> {
-    const res = await this.get<unknown[]>("/kol/invitecodes");
-    return res.data || [];
+  getQimaoStatsOverview(): Promise<QimaoStatsOverview> {
+    return this.request<QimaoStatsOverview>(
+      "GET",
+      "/api/qimao/stats/overview",
+    );
   }
 
-  // ======================== DouYin Account ========================
-
-  async submitDouYinStorageState(
-    storage_state: string,
-    nickname?: string,
-    remark?: string,
-  ): Promise<{ id: number }> {
-    const res = await this.post<{ id: number }>("/douyin/storage", {
-      storage_state, nickname, remark,
-    });
-    return res.data!;
+  getQimaoStatsAccounts(): Promise<QimaoStatsAccount[]> {
+    return this.request<QimaoStatsAccount[]>(
+      "GET",
+      "/api/qimao/stats/accounts",
+    );
   }
 
-  async updateDouYinStorageState(id: number, storage_state: string): Promise<void> {
-    await this.put("/douyin/storage", { id, storage_state });
+  getTomatoStatsOverview(): Promise<TomatoStatsOverview> {
+    return this.request<TomatoStatsOverview>(
+      "GET",
+      "/api/tomato/stats/overview",
+    );
   }
 
-  async getDouYinAccounts(): Promise<DouYinAccount[]> {
-    const res = await this.get<DouYinAccount[]>("/douyin/list");
-    return res.data || [];
+  getTomatoStatsAccounts(): Promise<TomatoStatsAccount[]> {
+    return this.request<TomatoStatsAccount[]>(
+      "GET",
+      "/api/tomato/stats/accounts",
+    );
   }
 
-  async getDouYinBaseAccounts(): Promise<DouYinAccountBase[]> {
-    const res = await this.get<DouYinAccountBase[]>("/douyin/base");
-    return res.data || [];
+  listDouyinVideos(opts?: ListDouyinVideosQuery): Promise<DouyinVideo[]> {
+    const qs = new URLSearchParams();
+    if (opts?.profileId) qs.set("profile_id", opts.profileId);
+    if (opts?.limit !== undefined) qs.set("limit", String(opts.limit));
+    const tail = qs.toString() ? `?${qs.toString()}` : "";
+    return this.request<DouyinVideo[]>("GET", `/api/douyin/videos${tail}`);
   }
 
-  async getDouYinById(id: number): Promise<DouYinAccount> {
-    const res = await this.get<DouYinAccount>(`/douyin/${id}`);
-    return res.data!;
+  listApiLog(opts: ApiLogQuery = {}): Promise<PagedApiLog> {
+    const qs = new URLSearchParams();
+    if (opts.service) qs.set("service", opts.service);
+    if (opts.endpoint) qs.set("endpoint", opts.endpoint);
+    if (opts.parsed_ok !== undefined) qs.set("parsed_ok", String(opts.parsed_ok));
+    if (opts.acknowledged !== undefined)
+      qs.set("acknowledged", String(opts.acknowledged));
+    if (opts.date_from) qs.set("date_from", opts.date_from);
+    if (opts.date_to) qs.set("date_to", opts.date_to);
+    if (opts.page !== undefined) qs.set("page", String(opts.page));
+    if (opts.page_size !== undefined) qs.set("page_size", String(opts.page_size));
+    const tail = qs.toString() ? `?${qs.toString()}` : "";
+    return this.request<PagedApiLog>("GET", `/api/admin/api_log${tail}`);
   }
 
-  async deleteDouYinAccount(id: number): Promise<void> {
-    await this.del(`/douyin/${id}`);
+  markApiLog(req: ApiLogMarkRequest): Promise<{ updated: number }> {
+    return this.request<{ updated: number }>("POST", "/api/admin/api_log/mark", req);
   }
 
-  async setDouYinStatus(id: number, status: number): Promise<void> {
-    await this.put(`/douyin/${id}/status`, { status });
+  deleteApiLog(req: ApiLogDeleteRequest): Promise<{ deleted: number }> {
+    return this.request<{ deleted: number }>("DELETE", "/api/admin/api_log", req);
   }
 
-  async updateDouYinRemark(id: number, remark: string): Promise<void> {
-    await this.put(`/douyin/${id}/remark`, { remark });
+  listProfiles(): Promise<import("@/types").BrowserProfile[]> {
+    return this.request("GET", "/api/profiles");
   }
 
-  // ======================== Submit Brush Task ========================
-
-  async submitBrushTask(req: SubmitBrushTaskRequest): Promise<boolean> {
-    const res = await this.post<boolean>("/submit/brush", req);
-    return res.data ?? false;
+  listKolConfig(): Promise<import("../types").ProfileConfig[]> {
+    return this.request("GET", "/api/admin/kol_config");
   }
 
-  async getRequestFrequency(interval?: string): Promise<FrequencyPoint[]> {
-    const q = interval ? `?interval=${interval}` : "";
-    const res = await this.get<FrequencyPoint[]>(`/submit/frequency${q}`);
-    return res.data || [];
+  updateKolConfig(items: import("../types").KolConfigUpdate[]): Promise<{ updated: number }> {
+    return this.request("PUT", "/api/admin/kol_config", items);
   }
 
-  // ======================== Task Data ========================
-
-  async getTaskDataGrid(query: TaskQueryRequest): Promise<TaskDataGrid> {
-    const res = await this.post<TaskDataGrid>("/task/grid", query);
-    return res.data!;
+  /// Singleton global admin settings (currently `contribution_pct`).
+  /// Returned `updated_at` lets the UI show "saved 30 seconds ago"
+  /// without an extra round trip on save.
+  getAdminSettings(): Promise<AdminSettings> {
+    return this.request<AdminSettings>("GET", "/api/admin/settings");
   }
 
-  async getTaskSummary(): Promise<TaskSummary> {
-    const res = await this.get<TaskSummary>("/task/summary");
-    return res.data!;
+  updateAdminSettings(payload: AdminSettingsUpdate): Promise<{ ok: boolean }> {
+    return this.request<{ ok: boolean }>("PUT", "/api/admin/settings", payload);
   }
 
-  async getRecentTasks(): Promise<RecentTaskPoint[]> {
-    const res = await this.get<RecentTaskPoint[]>("/task/recent");
-    return res.data || [];
+  /// Self-edit the caller's `tier2_contribution_pct` (the rate at which
+  /// THEIR own tier-2 subordinates' words flow up to them). This is
+  /// distinct from `updateUser` — admin uses that for cross-user edits.
+  updateMyTier2Contribution(
+    payload: MyTier2ContributionUpdate,
+  ): Promise<{ ok: boolean }> {
+    return this.request<{ ok: boolean }>(
+      "PUT",
+      "/api/users/me/tier2_contribution",
+      payload,
+    );
   }
 
-  async getRecentIncome(): Promise<KolIncome[]> {
-    const res = await this.get<KolIncome[]>("/task/income");
-    return res.data || [];
+  /// Admin income panel — list of all polled tomato accounts with
+  /// their latest snapshot. Returned newest-balance-first.
+  listIncome(): Promise<IncomeRow[]> {
+    return this.request<IncomeRow[]>("GET", "/api/admin/income");
   }
 
-  async getBooks(platform?: number): Promise<KolBook[]> {
-    const q = platform ? `?platform=${platform}` : "";
-    const res = await this.get<KolBook[]>(`/task/books${q}`);
-    return res.data || [];
+  /// Admin income panel — aggregated header (sum across all accounts).
+  getIncomeOverview(): Promise<IncomeOverview> {
+    return this.request<IncomeOverview>("GET", "/api/admin/income/overview");
   }
 
-  // ======================== Settings ========================
-
-  async getAllSettings(): Promise<CommonSetting[]> {
-    const res = await this.get<CommonSetting[]>("/setting/all");
-    return res.data || [];
+  /// Admin 七猫 income notice history — every monthly notice the
+  /// poller has emailed (or failed to email). Newest-first, capped
+  /// at 500 rows server-side.
+  listQimaoNotices(): Promise<QimaoNoticeRow[]> {
+    return this.request<QimaoNoticeRow[]>("GET", "/api/admin/qimao_notices");
   }
 
-  async savePlatformTypes(kol_id: number, open_types: number[]): Promise<void> {
-    await this.post("/setting/platform", { kol_id, open_types });
-  }
-
-  async saveTypeLimit(kol_id: number, platform: number, limit: number): Promise<void> {
-    await this.post("/setting/limit", { kol_id, platform, limit });
-  }
-
-  async getDouYinDom(): Promise<DomConfig> {
-    const res = await this.get<DomConfig>("/setting/dom/douyin");
-    return res.data || {};
-  }
-
-  async getKolDom(): Promise<Record<string, string>> {
-    const res = await this.get<Record<string, string>>("/setting/dom/kol");
-    return res.data || {};
-  }
-
-  async updateDomConfig(dom_type: string, selectors: Record<string, unknown>): Promise<void> {
-    await this.post("/setting/dom", { dom_type, selectors });
-  }
-
-  async getIncomeNotice(): Promise<IncomeNotice[]> {
-    const res = await this.get<IncomeNotice[]>("/setting/notice");
-    return res.data || [];
-  }
-
-  async setIncomeNotice(emails: string[], has_child: boolean): Promise<void> {
-    await this.post("/setting/notice", { emails, has_child });
-  }
-
-  async getThirdPartyLimit(): Promise<{ kol_count: number; douyin_count: number }> {
-    const res = await this.get<{ kol_count: number; douyin_count: number }>("/setting/authorize/limit");
-    return res.data!;
-  }
-
-  // ======================== Profile Sync ========================
-
-  async createServerProfile(
-    name: string,
-    browser_type?: string,
-    fingerprint_config?: Record<string, unknown>,
-  ): Promise<{ id: string }> {
-    const res = await this.post<{ id: string }>("/profile", {
-      name, browser_type, fingerprint_config,
-    });
-    return res.data!;
-  }
-
-  async listServerProfiles(): Promise<ServerBrowserProfile[]> {
-    const res = await this.get<ServerBrowserProfile[]>("/profile");
-    return res.data || [];
-  }
-
-  async getServerProfile(id: string): Promise<ServerBrowserProfile> {
-    const res = await this.get<ServerBrowserProfile>(`/profile/${id}`);
-    return res.data!;
-  }
-
-  async deleteServerProfile(id: string): Promise<void> {
-    await this.del(`/profile/${id}`);
+  exportApiLog(opts: ApiLogQuery = {}): Promise<{ csv: string; count: number }> {
+    const qs = new URLSearchParams();
+    if (opts.service) qs.set("service", opts.service);
+    if (opts.endpoint) qs.set("endpoint", opts.endpoint);
+    if (opts.parsed_ok !== undefined) qs.set("parsed_ok", String(opts.parsed_ok));
+    if (opts.acknowledged !== undefined)
+      qs.set("acknowledged", String(opts.acknowledged));
+    if (opts.date_from) qs.set("date_from", opts.date_from);
+    if (opts.date_to) qs.set("date_to", opts.date_to);
+    const tail = qs.toString() ? `?${qs.toString()}` : "";
+    return this.request<{ csv: string; count: number }>(
+      "GET",
+      `/api/admin/api_log/export${tail}`,
+    );
   }
 }
 
-// Singleton export
-export const kolApi = new KolApiClient();
+export const kolApi = new KolApi();

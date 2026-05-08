@@ -133,7 +133,7 @@ impl ProfileLockManager {
           profile_id: profile_id.to_string(),
           locked_by: user.user.id.clone(),
           locked_by_email: user.user.email.clone(),
-          locked_at: chrono::Utc::now().to_rfc3339(),
+          locked_at: chrono::Local::now().to_rfc3339(),
           expires_at: None,
         },
       );

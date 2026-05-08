@@ -144,7 +144,7 @@ export function GroupBadges({
   }
 
   return (
-    <div className="relative mb-4">
+    <div className="relative">
       {showLeftFade && (
         <div className="absolute left-0 top-0 bottom-0 w-8 bg-gradient-to-r from-background to-transparent pointer-events-none z-10" />
       )}

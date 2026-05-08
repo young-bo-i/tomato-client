@@ -3,7 +3,7 @@ use aes_gcm::{
   Aes256Gcm, Key, Nonce,
 };
 use argon2::{password_hash::SaltString, Argon2, PasswordHasher};
-use chrono::Utc;
+use chrono::Local;
 use lazy_static::lazy_static;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -356,7 +356,7 @@ impl CloudAuthManager {
       None => return true,
     };
 
-    let now = Utc::now().timestamp();
+    let now = Local::now().timestamp();
     exp - now < 120
   }
 
@@ -442,7 +442,7 @@ impl CloudAuthManager {
     // Build and persist auth state
     let auth_state = CloudAuthState {
       user: result.user,
-      logged_in_at: Utc::now().to_rfc3339(),
+      logged_in_at: Local::now().to_rfc3339(),
     };
     Self::store_auth_state(&auth_state)?;
 

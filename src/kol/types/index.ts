@@ -1,277 +1,464 @@
-// ============================================================
-// KOL Module Types - Maps to tomato-server models
-// ============================================================
+export type Role = "admin" | "user";
 
-// --- Auth ---
+export interface User {
+  id: number;
+  username: string;
+  role: Role;
+  is_active: boolean;
+  /** Notification email — server sends offline alerts here. */
+  email: string | null;
+  /** 2-level hierarchy. NULL → tier-1 (or admin). Non-null → tier-2,
+   * referencing the tier-1 above this user. */
+  parent_user_id: number | null;
+  /** Username of the parent (filled in by server-side LEFT JOIN).
+   * NULL when this row is tier-1. */
+  parent_username: string | null;
+  /** Rate at which THIS user's tier-2 subordinates' words flow up.
+   * Only meaningful for tier-1 with subordinates; admin/tier-2 default to 0. */
+  tier2_contribution_pct: number;
+  /** True when at least one other row has parent_user_id == this.id.
+   * Drives the conditional team-management UI. */
+  has_subordinates: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface LoginRequest {
-  account: string;
+  username: string;
   password: string;
 }
 
 export interface LoginResponse {
   token: string;
-  account_id: number;
-  account_name: string;
+  user: User;
 }
 
-export interface AccountInfo {
-  id: number;
-  account_name: string;
-  phone?: string;
-  email?: string;
-  status: number;
-  parent_id?: number;
-  created_at: string;
-}
-
-export interface CreateAccountRequest {
-  account_name: string;
+export interface CreateUserRequest {
+  username: string;
   password: string;
-  phone?: string;
-  email?: string;
+  role: Role;
+  /** Optional notification email. Receives offline alerts for this
+   * user's profiles. */
+  email?: string | null;
+  /** Optional parent (creates this row as a tier-2 user). Must
+   * reference an active tier-1 non-admin user. Admins cannot
+   * have a parent. */
+  parent_user_id?: number | null;
 }
 
-// --- KOL Account (Tomato/Fanqie platform) ---
-export interface KolAccount {
-  id: number;
-  account_id: number;
-  cookies?: string;
-  uid?: string;
-  identity_name?: string;
-  identity_number?: string;
-  payment_account?: string;
-  mobile?: string;
-  remark?: string;
-  status: number;
-  created_at: string;
+export interface UpdateUserRequest {
+  password?: string;
+  role?: Role;
+  is_active?: boolean;
+  /** Tri-state: `undefined` (omit) preserves existing, `null` clears,
+   * non-empty string sets. The server applies the same semantics. */
+  email?: string | null;
+  /** Tri-state: `undefined` preserves, `null` promotes to tier-1,
+   * `number` reassigns to a new parent. */
+  parent_user_id?: number | null;
+  /** Admin-side override of the user's tier2 contribution rate. */
+  tier2_contribution_pct?: number;
 }
 
-export interface KolAccountBase {
-  id: number;
-  account_id: number;
-  uid?: string;
-  identity_name?: string;
-  remark?: string;
-  status: number;
-  created_at: string;
+export interface ApiErrorPayload {
+  error: string;
 }
 
-// --- DouYin Account ---
-export interface DouYinAccount {
-  id: number;
-  account_id: number;
-  storage_state?: string;
-  nickname?: string;
-  remark?: string;
-  status: number; // 0=Available, 1=NonLogin
-  is_deleted: boolean;
-  created_at: string;
+export class ApiError extends Error {
+  constructor(
+    public status: number,
+    message: string,
+  ) {
+    super(message);
+    this.name = "ApiError";
+  }
+}
+
+export interface TomatoBookCategory {
+  category_id: number;
+  category_name: string;
+  status?: number;
+}
+
+export interface TomatoBook {
+  position: number;
+  book_id: string;
+  book_name: string;
+  author: string | null;
+  word_num: number | null;
+  score: number | null;
+  chapter_num: number | null;
+  recent_income: number | null;
+  thumb_url: string | null;
+  book_abstract: string | null;
+  categories: TomatoBookCategory[] | null;
+  promotion_types: unknown;
+  fetched_at: string;
+}
+
+export interface TomatoBooksRefreshResult {
+  ok: boolean;
+  count?: number;
+  error?: string;
+}
+
+/** One row in the qimao_books snapshot. Field set mirrors the upstream
+ * `data.list[]` items the server promotes into columns; `tags` is kept
+ * as an opaque JSON array since the upstream's labels are free-form. */
+export interface QimaoBook {
+  position: number;
+  book_id: number;
+  book_name: string;
+  author: string | null;
+  first_category: string | null;
+  second_category: string | null;
+  /** Display string from the upstream (e.g. "1355.91万字"). */
+  words_num_text: string | null;
+  /** Raw word count integer. */
+  words: number | null;
+  cover: string | null;
+  intro: string | null;
+  income_text: string | null;
+  is_forbid: boolean;
+  is_rights: boolean;
+  ad_status: number | null;
+  tags: unknown;
+  fetched_at: string;
+}
+
+export interface QimaoBooksRefreshResult {
+  ok: boolean;
+  count?: number;
+  error?: string;
+}
+
+export interface QimaoTokenResult {
+  ok: boolean;
+  error?: string;
+}
+
+/** Global counters across all qimao_aliases. Mirrors TomatoStatsOverview
+ * but adds `awaiting_alias_id` (qimao-specific: rows submitted to the
+ * platform but whose alias_id we haven't yet polled out of keyword_page). */
+export interface QimaoStatsOverview {
+  total: number;
+  submit_pending: number;
+  submit_done: number;
+  submit_failed: number;
+  awaiting_alias_id: number;
+  backfill_pending: number;
+  backfill_done: number;
+  backfill_failed: number;
+}
+
+/** Read shape of /api/admin/email_settings. Password is intentionally
+ * NOT returned — `is_password_set` lets the form show "(已保存)"
+ * without exposing the value. */
+export interface EmailSettings {
+  smtp_host: string;
+  smtp_port: number;
+  smtp_username: string;
+  is_password_set: boolean;
+  from_address: string;
+  from_name: string;
+  use_tls: boolean;
+  recipients: string[];
   updated_at: string;
 }
 
-export interface DouYinAccountBase {
+/** Write shape. `smtp_password === null` (omit) preserves the existing
+ * value; `""` clears it; any other string sets it. */
+export interface EmailSettingsUpdate {
+  smtp_host: string;
+  smtp_port: number;
+  smtp_username: string;
+  smtp_password?: string | null;
+  from_address: string;
+  from_name: string;
+  use_tls: boolean;
+  recipients: string[];
+}
+
+export interface EmailTestResult {
+  ok: boolean;
+  to?: string;
+  error?: string;
+}
+
+/** Per-profile rollup. Token health here means "do we have a working
+ * x-qm-devops-token?" (refreshed by the server every ~12h). */
+export interface QimaoStatsAccount {
+  profile_id: string;
+  profile_name: string;
+  qimao_identifier: string | null;
+  has_token: boolean;
+  qimao_token_refreshed_at: string | null;
+  qimao_token_last_error: string | null;
+  submit_done: number;
+  submit_failed: number;
+  backfill_done: number;
+  backfill_failed: number;
+  last_submitted_at: string | null;
+}
+
+/** Global counters for the tomato dashboard top row. */
+export interface TomatoStatsOverview {
+  total: number;
+  submit_pending: number;
+  submit_done: number;
+  submit_failed: number;
+  /** Eligible-for-backfill subset that hasn't been backfilled yet. */
+  backfill_pending: number;
+  backfill_done: number;
+  backfill_failed: number;
+}
+
+/** Per-account row. Counts only work *attributed* to this account. */
+export interface TomatoStatsAccount {
+  profile_id: string;
+  profile_name: string;
+  is_online: boolean;
+  offline_reason: string | null;
+  last_offline_at: string | null;
+  cookie_updated_at: string;
+  submit_done: number;
+  submit_failed: number;
+  backfill_done: number;
+  backfill_failed: number;
+  last_submitted_at: string | null;
+}
+
+export interface DouyinVideo {
   id: number;
-  account_id: number;
-  nickname?: string;
-  remark?: string;
-  status: number;
+  profile_id: string;
+  aweme_id: string;
+  title: string | null;
+  /** Chain-extracted book name. NULL when no rule matched. */
+  title_filtered: string | null;
+  suggest_word: string | null;
+  /** Chain-extracted suggest keyword. NULL when no rule matched. */
+  suggest_word_filtered: string | null;
+  share_url: string | null;
+  first_frame_url: string | null;
+  captured_at: string;
+  inserted_at: string;
+}
+
+export interface ListDouyinVideosQuery {
+  profileId?: string;
+  limit?: number;
+}
+
+export interface JobSummary {
+  job_name: string;
+  total_runs: number;
+  successful_runs: number;
+  failed_runs: number;
+  total_items: number;
+  avg_duration_ms: number | null;
+  last_ran_at: string | null;
+  last_success: boolean | null;
+  last_error: string | null;
+}
+
+export interface JobRun {
+  id: number;
+  job_name: string;
+  ran_at: string;
+  duration_ms: number | null;
+  items_processed: number;
+  success: boolean;
+  error_reason: string | null;
+}
+
+export interface ApiLogRow {
+  id: number;
+  service: string;
+  endpoint: string;
+  request_summary: unknown | null;
+  http_status: number | null;
+  raw_response: unknown | null;
+  parsed_ok: boolean;
+  parse_error: string | null;
+  acknowledged: boolean;
+  acknowledged_at: string | null;
   created_at: string;
 }
 
-// --- QiMao Account ---
-export interface QiMaoAccount {
-  id: number;
-  account_id: number;
-  phone?: string;
-  token?: string;
-  user_info?: Record<string, unknown>;
-  status: number;
-  remark?: string;
-  created_at: string;
-}
-
-// --- Brush Task ---
-export interface BrushTask {
-  id: number;
-  account_id: number;
-  kol_id: number;
-  alias_name: string;
-  alias_id?: string;
-  share_url?: string;
-  first_picture_url?: string;
-  platform: AliasType;
-  task_status: number;
-  write_back_status: WriteBackStatus;
-  write_back_time?: string;
-  created_at: string;
-}
-
-export interface SubmitBrushTaskRequest {
-  douyin_id: number;
-  alias_name: string;
-  share_url?: string;
-  first_picture_url?: string;
-}
-
-export interface TaskDataGrid {
-  items: BrushTask[];
+export interface PagedApiLog {
+  rows: ApiLogRow[];
   total: number;
   page: number;
   page_size: number;
 }
 
-export interface TaskSummary {
-  total_count: number;
-  today_count: number;
-  no_callback_count: number;
-}
-
-export interface TaskQueryRequest {
+export interface ApiLogQuery {
+  service?: string;
+  endpoint?: string;
+  parsed_ok?: boolean;
+  acknowledged?: boolean;
+  date_from?: string;
+  date_to?: string;
   page?: number;
   page_size?: number;
-  date_range?: "day" | "week" | "month";
-  platform?: AliasType;
 }
 
-// --- Books ---
-export interface KolBook {
-  id: number;
-  book_id: string;
-  book_name: string;
-  platform: number;
-  created_at: string;
+export interface ApiLogMarkRequest {
+  ids: number[];
+  acknowledged: boolean;
 }
 
-// --- Settings ---
-export interface CommonSetting {
-  id: number;
-  account_id: number;
-  kol_id: number;
-  scene: string;
-  setting_value: string;
-  created_at: string;
+export interface ApiLogDeleteRequest {
+  ids: number[];
 }
 
-export interface DomConfig {
-  // DouYin DOM selectors (fetched from server, used for automation)
-  IsOpenSite?: string;
-  IsLogin?: string;
-  VideoContainerSelector?: string;
-  LiveSelector?: string;
-  VideoIdAttr?: string;
-  SuggestWork?: string;
-  BottomInfo?: string;
-  VideoTitle?: string;
-  FirstFrame?: string;
-  NextButton?: string;
+export interface KolConfigRow {
+  profile_id: string;
+  platform: string;
+  alias_type: number;
+  enabled: boolean;
+  daily_limit: number;
+  updated_at: string;
 }
 
-export interface KolDomConfig {
-  selectors: Record<string, string>;
+export interface ProfileConfig {
+  profile_id: string;
+  profile_name: string;
+  kol_platform: string;
+  user_id: number;
+  username: string;
+  is_admin: boolean;
+  configs: KolConfigRow[];
 }
 
-// --- Income ---
-export interface KolIncome {
-  id: number;
-  account_id: number;
-  kol_id: number;
+export interface KolConfigUpdate {
+  profile_id: string;
+  platform: string;
+  alias_type: number;
+  enabled: boolean;
+  daily_limit: number;
+}
+
+/** Read shape of `/api/admin/settings`. Singleton row of global runtime
+ * knobs. Currently exposes `admin_contribution_pct`. */
+export interface AdminSettings {
+  /** 0..=100. Share of every non-admin user's words that the
+   * submission router routes to the admin pool (step 1 of the
+   * sequential cascade). 0 = disabled. Only {0,10,20,50,100}
+   * accepted at PUT time. */
+  admin_contribution_pct: number;
+  updated_at: string;
+}
+
+/** Write shape. Object wrapper for forward compatibility — more
+ * global knobs will likely live here. */
+export interface AdminSettingsUpdate {
+  admin_contribution_pct: number;
+}
+
+/** Self-edit shape for `PUT /api/users/me/tier2_contribution`. */
+export interface MyTier2ContributionUpdate {
+  tier2_contribution_pct: number;
+}
+
+/** One row in the admin income panel. All amounts in 分 (cents). */
+export interface IncomeRow {
+  profile_id: string;
+  profile_name: string;
+  owner_user_id: number;
+  owner_username: string;
+  owner_role: "admin" | "user";
+
   total_income: number;
   regular_income: number;
   bonus_income: number;
-  current_month_income: number;
   current_week_income: number;
-  last_update_time: string;
+  current_month_income: number;
+
+  /** Upstream's `latest_update_time` localized. NULL = never computed. */
+  latest_update_time: string | null;
+
+  /** Verbatim arrays from upstream — render as-is. */
+  weekly_income_list: WeeklyIncomeEntry[] | null;
+  monthly_income_list: MonthlyIncomeEntry[] | null;
+  task_income_list: TaskIncomeEntry[] | null;
+
+  /** Most-recent positive jump observed by the poller. */
+  last_diff: number;
+  last_diff_at: string | null;
+  /** When the diff email for `last_diff_at` was successfully sent.
+   * `last_emailed_at < last_diff_at` → email pending (probably failed). */
+  last_emailed_at: string | null;
+  /** Most recent SMTP failure verbatim. Cleared on success. */
+  last_email_error: string | null;
+  /** When the poller last refreshed this row (heartbeat). */
+  fetched_at: string;
 }
 
-export interface IncomeNotice {
-  id: number;
-  account_id: number;
-  email: string;
-  has_child: boolean;
+export interface WeeklyIncomeEntry {
+  start_date: string;
+  end_date: string;
+  income: number;
+  regular_income: number;
+  bonus_income: number;
+  sharing_income: number;
+  invitation_income: number;
+  supplement_income: number;
 }
 
-// --- Browser Profile (sync with server) ---
-export interface ServerBrowserProfile {
-  id: string;
-  account_id: number;
-  name: string;
-  browser_type: string;
-  fingerprint_config: Record<string, unknown>;
-  proxy_config?: Record<string, unknown>;
-  metadata?: Record<string, unknown>;
-  last_sync_at?: string;
+export interface MonthlyIncomeEntry {
+  month: string;
+  income: number;
+  regular_income: number;
+  bonus_income: number;
+  sharing_income: number;
+  invitation_income: number;
+  supplement_income: number;
+}
+
+export interface TaskIncomeEntry {
+  task_type: number;
+  regular_income: number;
+  bonus_income: number;
+  total_income: number;
+  update_time: string;
+  update_time_ts: number;
+  supplement_income: number;
+}
+
+/** One historical row in the 七猫 monthly income notice panel. */
+export interface QimaoNoticeRow {
+  profile_id: string;
+  profile_name: string;
+  owner_user_id: number;
+  owner_username: string;
+
+  message_id: number;
+  /** "X月KOC七猫免费小说收益明细" or similar. */
+  title: string;
+  /** Full notice HTML from upstream (inline-styled). UI renders in a
+   * sandboxed surface to avoid style bleed. */
+  content_html: string;
+  /** Upstream's "YYYY-MM-DD" `create_time`, parsed. NULL = unparseable. */
+  notice_date: string | null;
+
+  recipient_email: string | null;
+  /** NULL when the email send failed; `send_error` carries the SMTP
+   * error in that case. */
+  emailed_at: string | null;
+  send_error: string | null;
+
   created_at: string;
 }
 
-// --- Request Frequency ---
-export interface FrequencyPoint {
-  time_bucket: string;
-  count: number;
-}
-
-// --- Recent Task Data ---
-export interface RecentTaskPoint {
-  platform: number;
-  day: string;
-  count: number;
-}
-
-// --- Enums ---
-export enum AliasType {
-  XiaoShuo = 1,
-  TouTiao = 2,
-  ChangTing = 3,
-  WuKong = 4,
-}
-
-export const AliasTypeLabel: Record<AliasType, string> = {
-  [AliasType.XiaoShuo]: "小说",
-  [AliasType.TouTiao]: "头条",
-  [AliasType.ChangTing]: "畅听",
-  [AliasType.WuKong]: "悟空",
-};
-
-export enum WriteBackStatus {
-  Pending = 0,
-  Done = 1,
-  Expired = 2,
-  ChangeUrl = 3,
-}
-
-export const WriteBackStatusLabel: Record<WriteBackStatus, string> = {
-  [WriteBackStatus.Pending]: "待回填",
-  [WriteBackStatus.Done]: "已回填",
-  [WriteBackStatus.Expired]: "已过期",
-  [WriteBackStatus.ChangeUrl]: "待更换",
-};
-
-export enum DouYinAccountStatus {
-  Available = 0,
-  NonLogin = 1,
-}
-
-// --- Auto Gather Config ---
-export interface AutoGatherConfig {
-  enabled_douyin_ids: number[];
-  start_time: string; // "HH:mm"
-  end_time: string;   // "HH:mm"
-  interval_ms: number; // delay between videos (default 800)
-  videos_per_session: number; // default 40
-}
-
-// --- API Response Wrapper ---
-export interface ApiResponse<T = unknown> {
-  success: boolean;
-  data?: T;
-  message?: string;
-}
-
-// --- Gather Log ---
-export interface GatherLog {
-  id: string;
-  timestamp: string;
-  douyin_id: number;
-  douyin_nickname: string;
-  level: "info" | "warn" | "error";
-  message: string;
+/** Aggregated header for the panel — sum across every polled account. */
+export interface IncomeOverview {
+  account_count: number;
+  total_income: number;
+  regular_income: number;
+  bonus_income: number;
+  current_week_income: number;
+  current_month_income: number;
+  /** Most recent fetched_at across all rows. */
+  last_fetched_at: string | null;
 }

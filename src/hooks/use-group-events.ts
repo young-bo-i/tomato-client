@@ -55,9 +55,12 @@ export function useGroupEvents() {
           void loadGroups();
         });
 
-        // Store both listeners for cleanup
+        // Store both listeners for cleanup. Capture the current value before
+        // reassigning — otherwise the closure self-references and recurses
+        // infinitely when called on unmount.
+        const groupsUnlistenOrig = groupsUnlisten;
         groupsUnlisten = () => {
-          groupsUnlisten?.();
+          groupsUnlistenOrig?.();
           profilesUnlisten();
         };
 

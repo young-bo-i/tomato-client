@@ -1217,6 +1217,11 @@ mod tests {
       created_by_id: None,
       created_by_email: None,
       dns_blocklist: None,
+      kol_platform: None,
+
+      qimao_identifier: None,
+
+      qimao_credential: None,
     };
 
     let path = profile.get_profile_data_path(&profiles_dir);

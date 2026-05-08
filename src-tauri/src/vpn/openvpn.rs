@@ -3,7 +3,7 @@
 use super::config::{OpenVpnConfig, VpnError, VpnStatus};
 use super::tunnel::VpnTunnel;
 use async_trait::async_trait;
-use chrono::Utc;
+use chrono::Local;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -230,7 +230,7 @@ impl VpnTunnel for OpenVpnTunnel {
       let id = child.id();
       if id > 0 {
         self.connected.store(true, Ordering::Release);
-        self.connected_at = Some(Utc::now().timestamp());
+        self.connected_at = Some(Local::now().timestamp());
         log::info!("[vpn] OpenVPN tunnel {} connected (PID: {id})", self.vpn_id);
         return Ok(());
       }
