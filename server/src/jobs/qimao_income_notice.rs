@@ -41,6 +41,7 @@ use uuid::Uuid;
 
 use crate::db::DbPool;
 use crate::services::email_sender::{self, EmailSettings};
+use crate::services::email_template::{email_shell, notice_card};
 use crate::services::qimao_account;
 use crate::services::qimao_message::{
     build_http_client, list_notices, MessageItem, ENDPOINT_NOTICE_LIST, SERVICE_NAME,
@@ -188,15 +189,15 @@ async fn handle_profile(
     {
         Ok(v) => v,
         Err(err) if err.is_auth_failure() => {
-            qimao_account::invalidate_token(
+            qimao_account::recover_or_offline(
                 pool,
+                http,
                 profile.profile_id,
                 &format!("notice_list: {err}"),
             )
-            .await
-            .ok();
+            .await;
             tracing::warn!(
-                "qimao_income_notice: token dead profile={} {err}",
+                "qimao_income_notice: token auth failed profile={} {err}",
                 profile.profile_id
             );
             return;
@@ -275,17 +276,40 @@ async fn handle_notice(
     let (emailed_at, send_error): (Option<DateTime<Local>>, Option<String>) = match recipient
         .as_ref()
     {
-        Some(addr) => match email_sender::send_html(
-            settings,
-            std::slice::from_ref(addr),
-            &notice.title,
-            &notice.content,
-        )
-        .await
-        {
-            Ok(()) => (Some(Local::now()), None),
-            Err(e) => (None, Some(format!("smtp: {e}"))),
-        },
+        Some(addr) => {
+            // 上游 (七猫) 推下来的 content 是一段独立 HTML — 我们把它
+            // 嵌进自己的移动端友好 shell,顶部加上账号 + 通知日期的
+            // 上下文卡,让用户在手机上一眼就知道是哪个 profile。
+            let date_str = notice_date
+                .map(|d| d.format("%Y-%m-%d").to_string())
+                .unwrap_or_else(|| "—".to_string());
+            let secondary = format!(
+                "账号:{} · 通知日期:{}",
+                profile.profile_name, date_str
+            );
+            let body = email_shell(
+                &notice.title,
+                Some(&secondary),
+                &notice_card(
+                    &notice.title,
+                    Some("以下为七猫达人推送的原始通知"),
+                    &notice.content,
+                ),
+                Some("收到这封邮件意味着你的本月七猫达人收益已结算"),
+            );
+
+            match email_sender::send_html(
+                settings,
+                std::slice::from_ref(addr),
+                &notice.title,
+                &body,
+            )
+            .await
+            {
+                Ok(()) => (Some(Local::now()), None),
+                Err(e) => (None, Some(format!("smtp: {e}"))),
+            }
+        }
         None => (None, Some("no recipient (owner email empty + no admin fallback)".into())),
     };
 
@@ -385,64 +409,42 @@ async fn send_admin_consolidated_digest(
     }
 }
 
-/// Render the admin digest. Header summarizes count, then each notice
-/// gets a section: "User · profile_name · title (notice_date)" header
-/// + the notice's verbatim content_html. Sections separated by <hr>.
-/// HTML escape only the metadata header — content_html is upstream-
-/// trusted (qimao platform's own template) so it's embedded as-is.
+/// Render the admin digest body using the shared mobile-friendly
+/// template. Each notice becomes a notice_card whose header shows
+/// "@owner · profile · date" and whose body embeds the upstream's
+/// HTML verbatim (the qimao platform's own template — trusted).
 fn render_admin_digest_body(notices: &[EmailedNotice]) -> String {
-    use std::fmt::Write as _;
     let now_str = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let user_count = notices
+        .iter()
+        .map(|x| x.owner_username.as_str())
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
 
-    let mut html = String::new();
-    let _ = writeln!(
-        html,
-        r#"<!doctype html>
-<html><body style="font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif; color:#222;">
-<h2 style="margin:0 0 12px;color:#1a73e8;">七猫达人收益通知速览</h2>
-<p style="margin:0 0 12px;">本轮收到 <strong>{n}</strong> 条新通知,涉及 <strong>{u}</strong> 位用户。检查时间:{ts}</p>"#,
-        n = notices.len(),
-        u = notices
-            .iter()
-            .map(|x| x.owner_username.as_str())
-            .collect::<std::collections::BTreeSet<_>>()
-            .len(),
-        ts = html_escape_qimao(&now_str),
+    let title = "七猫达人收益通知速览";
+    let subtitle = format!(
+        "本轮收到 {} 条新通知,涉及 {} 位用户",
+        notices.len(),
+        user_count,
     );
 
-    for (i, n) in notices.iter().enumerate() {
-        if i > 0 {
-            let _ = writeln!(
-                html,
-                r#"<hr style="border:0;border-top:1px solid #e5e6e8;margin:24px 0;" />"#
-            );
-        }
+    let mut content = String::new();
+    for n in notices {
         let date_str = n
             .notice_date
             .map(|d| d.format("%Y-%m-%d").to_string())
             .unwrap_or_else(|| "—".to_string());
-        let _ = writeln!(
-            html,
-            r#"<div style="margin:16px 0 8px;padding:8px 12px;background:#f5f6f8;border-radius:6px;font-size:13px;">
-<div style="font-weight:600;color:#1a73e8;">{title}</div>
-<div style="color:#666;font-size:12px;margin-top:4px;">用户:@{owner} · 账号:{profile} · 通知日期:{date}</div>
-</div>
-<div style="padding:0 12px;">{content}</div>"#,
-            title = html_escape_qimao(&n.title),
-            owner = html_escape_qimao(&n.owner_username),
-            profile = html_escape_qimao(&n.profile_name),
-            date = html_escape_qimao(&date_str),
-            content = n.content_html, // platform-trusted upstream HTML
+        let secondary = format!(
+            "@{} · 账号:{} · 通知日期:{}",
+            n.owner_username, n.profile_name, date_str,
         );
+        content.push_str(&notice_card(
+            &n.title,
+            Some(&secondary),
+            &n.content_html, // platform-trusted upstream HTML, embedded as-is
+        ));
     }
 
-    let _ = writeln!(html, "</body></html>");
-    html
-}
-
-fn html_escape_qimao(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
+    let footer = format!("检查时间:{} · 数据来源:七猫达人 message/notice/list", now_str);
+    email_shell(title, Some(&subtitle), &content, Some(&footer))
 }

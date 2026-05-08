@@ -82,10 +82,15 @@ struct BookRow {
 pub async fn run(pool: &DbPool, abogus_url: &str) -> Result<(), String> {
     tracing::info!("tomato_rank: starting daily fetch");
 
-    let selected = match tomato_cookie::pick_random_online(pool).await? {
+    // 选 admin 的随机一个在线 cookie。书籍排行是平台全局数据,理应从
+    // 管理员账号池里抽,而不是借用普通用户的 cookie 跑爬虫。
+    let selected = match tomato_cookie::pick_random_online_admin(pool).await? {
         Some(s) => s,
         None => {
-            tracing::warn!("tomato_rank: no online tomato cookie available; skipping");
+            tracing::warn!(
+                "tomato_rank: no online admin tomato cookie available; \
+                 skipping (need at least one admin with a logged-in tomato profile)"
+            );
             return Ok(());
         }
     };

@@ -275,12 +275,29 @@ class KolApi {
     return this.request("GET", "/api/profiles");
   }
 
-  listKolConfig(): Promise<import("../types").ProfileConfig[]> {
-    return this.request("GET", "/api/admin/kol_config");
+  /// Caller's own tomato/qimao profile configs. Admin sees only their
+  /// own profiles too (cross-user edits are gone — admin uses defaults).
+  listMyKolConfig(): Promise<import("../types").ProfileConfig[]> {
+    return this.request("GET", "/api/users/me/kol_config");
   }
 
-  updateKolConfig(items: import("../types").KolConfigUpdate[]): Promise<{ updated: number }> {
-    return this.request("PUT", "/api/admin/kol_config", items);
+  updateMyKolConfig(
+    items: import("../types").KolConfigUpdate[],
+  ): Promise<{ updated: number }> {
+    return this.request("PUT", "/api/users/me/kol_config", items);
+  }
+
+  /// Admin-only: per-(platform, alias_type) defaults used as initial
+  /// values when creating new tomato/qimao profiles. Doesn't affect
+  /// existing profile configs.
+  listKolConfigDefaults(): Promise<import("../types").KolConfigDefault[]> {
+    return this.request("GET", "/api/admin/kol_config_defaults");
+  }
+
+  updateKolConfigDefaults(
+    items: import("../types").KolConfigDefaultUpdate[],
+  ): Promise<{ updated: number }> {
+    return this.request("PUT", "/api/admin/kol_config_defaults", items);
   }
 
   /// Singleton global admin settings (currently `contribution_pct`).
@@ -330,22 +347,22 @@ class KolApi {
     );
   }
 
-  /// Admin income panel — list of all polled tomato accounts with
-  /// their latest snapshot. Returned newest-balance-first.
+  /// 番茄收益看板 — caller's own polled tomato accounts with their
+  /// latest snapshot, sorted by total_income DESC. Admin sees only
+  /// their own profiles too; the all-users view is delivered via the
+  /// "[管理员速览]" email digest.
   listIncome(): Promise<IncomeRow[]> {
-    return this.request<IncomeRow[]>("GET", "/api/admin/income");
+    return this.request<IncomeRow[]>("GET", "/api/users/me/income");
   }
 
-  /// Admin income panel — aggregated header (sum across all accounts).
   getIncomeOverview(): Promise<IncomeOverview> {
-    return this.request<IncomeOverview>("GET", "/api/admin/income/overview");
+    return this.request<IncomeOverview>("GET", "/api/users/me/income/overview");
   }
 
-  /// Admin 七猫 income notice history — every monthly notice the
-  /// poller has emailed (or failed to email). Newest-first, capped
-  /// at 500 rows server-side.
+  /// 七猫收益通知 — caller's own monthly notice history. Same
+  /// scoping as listIncome.
   listQimaoNotices(): Promise<QimaoNoticeRow[]> {
-    return this.request<QimaoNoticeRow[]>("GET", "/api/admin/qimao_notices");
+    return this.request<QimaoNoticeRow[]>("GET", "/api/users/me/qimao_notices");
   }
 
   exportApiLog(opts: ApiLogQuery = {}): Promise<{ csv: string; count: number }> {

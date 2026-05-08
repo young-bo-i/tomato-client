@@ -152,17 +152,18 @@ async fn handle_row(
     {
         Ok(r) => r,
         Err(err) if err.is_auth_failure() => {
-            qimao_account::invalidate_token(
+            // Self-heal: try to re-signin with stored credentials. If
+            // signin works, the next round picks up the new token and
+            // we silently recover. If signin fails (bad creds), the
+            // helper flips the qimao pkc row offline and notification_
+            // dispatcher fires the "需要重新登录" email next minute.
+            qimao_account::recover_or_offline(
                 pool,
+                http,
                 selected.profile_id,
                 &format!("precheck: {err}"),
             )
-            .await
-            .ok();
-            tracing::warn!(
-                "qimao_alias_submitter: token dead profile={} on precheck: {err}",
-                selected.profile_id
-            );
+            .await;
             return RowOutcome::TokenDead;
         }
         Err(err) => {
@@ -221,13 +222,13 @@ async fn handle_row(
             );
         }
         Err(err) if err.is_auth_failure() => {
-            qimao_account::invalidate_token(
+            qimao_account::recover_or_offline(
                 pool,
+                http,
                 selected.profile_id,
                 &format!("add_keywords: {err}"),
             )
-            .await
-            .ok();
+            .await;
             return RowOutcome::TokenDead;
         }
         Err(err) => {

@@ -54,11 +54,14 @@ struct BookRow {
 pub async fn run(pool: &DbPool) -> Result<(), String> {
     tracing::info!("qimao_rank: starting daily fetch");
 
-    let selected = match qimao_account::pick_random_active(pool).await? {
+    // 同 tomato_rank:从 admin 池子里随机抽一个在线 qimao token,书籍
+    // 排行不该走普通用户的额度。
+    let selected = match qimao_account::pick_random_active_admin(pool).await? {
         Some(s) => s,
         None => {
             tracing::warn!(
-                "qimao_rank: no usable qimao token (need a profile with credentials whose token has been refreshed); skipping"
+                "qimao_rank: no usable admin qimao token (need an admin profile \
+                 with credentials whose token has been refreshed); skipping"
             );
             return Ok(());
         }
@@ -82,13 +85,13 @@ pub async fn run(pool: &DbPool) -> Result<(), String> {
             Ok(list) => list,
             Err(err) if err.is_auth_failure() => {
                 tracing::warn!("qimao_rank: page {page} auth failure: {err}; stopping");
-                qimao_account::invalidate_token(
+                qimao_account::recover_or_offline(
                     pool,
+                    &http,
                     selected.profile_id,
                     &format!("qimao_rank: {err}"),
                 )
-                .await
-                .ok();
+                .await;
                 break;
             }
             Err(err) => {

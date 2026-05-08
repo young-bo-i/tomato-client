@@ -42,27 +42,57 @@ pub struct SelectedCookie {
     pub cookie_header: Arc<str>,
 }
 
-/// Pick a random tomato cookie that's still considered logged in. Random
-/// rather than freshest because the user wants traffic spread evenly
-/// across multiple accounts, not concentrated on whoever logged in last.
-///
-/// Returns `Ok(None)` (not an error) when no eligible cookie exists —
-/// workers idle in that state instead of failing.
-///
-/// Use `pick_random_online_for_user` when work must be attributed to a
-/// specific user's own cookies (alias/backfill submission).
-pub async fn pick_random_online(pool: &DbPool) -> Result<Option<SelectedCookie>, String> {
-    pick_cookie(pool, None).await
-}
-
-/// Same as `pick_random_online` but restricted to cookies belonging to
-/// `user_id`. Used by alias/backfill workers so each user's pending
-/// rows are only ever submitted with that user's own platform cookies.
+/// Random online tomato cookie owned by `user_id`. Used by alias/
+/// backfill workers so each user's pending rows are only submitted
+/// with that user's own platform cookies. `Ok(None)` when the user
+/// has no online tomato cookie.
 pub async fn pick_random_online_for_user(
     pool: &DbPool,
     user_id: i32,
 ) -> Result<Option<SelectedCookie>, String> {
     pick_cookie(pool, Some(user_id)).await
+}
+
+/// Pick a random online tomato cookie owned by **any active admin
+/// user**. Used by the daily 番茄书籍 rank scraper — book rankings are
+/// platform-global data we want to fetch with the admin's own accounts
+/// (operators don't want their crawl traffic charged to a random user's
+/// cookie). `Ok(None)` when no admin has an online tomato cookie —
+/// scraper logs + idles in that case.
+pub async fn pick_random_online_admin(pool: &DbPool) -> Result<Option<SelectedCookie>, String> {
+    let row = sqlx::query(
+        r#"SELECT pkc.profile_id, pkc.cookies
+           FROM platform_kol_cookies pkc
+           JOIN browser_profiles bp ON bp.id = pkc.profile_id
+           JOIN users u             ON u.id = bp.user_id
+           WHERE pkc.platform = $1
+             AND pkc.domain = $2
+             AND pkc.is_online = TRUE
+             AND u.is_active = TRUE
+             AND u.role = 'admin'
+           ORDER BY random()
+           LIMIT 1"#,
+    )
+    .bind(PLATFORM)
+    .bind(DOMAIN)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| format!("pick admin cookie: {e}"))?;
+
+    let Some(row) = row else { return Ok(None) };
+    let profile_id: Uuid = row
+        .try_get("profile_id")
+        .map_err(|e| format!("profile_id col: {e}"))?;
+    let cookies: JsonValue = row
+        .try_get("cookies")
+        .map_err(|e| format!("cookies col: {e}"))?;
+    match serialize_cookie_header(&cookies)? {
+        Some(h) => Ok(Some(SelectedCookie {
+            profile_id,
+            cookie_header: Arc::from(h),
+        })),
+        None => Ok(None),
+    }
 }
 
 /// Pick the cookie for one specific profile (used when target_profile_id is set).
@@ -106,12 +136,11 @@ async fn pick_cookie(
     pool: &DbPool,
     user_id: Option<i32>,
 ) -> Result<Option<SelectedCookie>, String> {
-    // No `u.role = 'admin'` filter: every active user can hold their
-    // own tomato accounts (the admin pool is just one tier of the
-    // submission_router fallback, not a hard requirement). The
-    // user_id parameter scopes selection to a specific user when set;
-    // pass `None` from rank scrapers / one-off ops where any working
-    // cookie is fine.
+    // The user_id parameter scopes selection to a specific user — all
+    // current callers pass Some (alias/backfill submission). The Option
+    // shape is kept so future "any user" callers can pass None without
+    // adding a second helper. The rank scrapers use the dedicated
+    // `pick_random_online_admin` instead — no caller passes None today.
     let row = sqlx::query(
         r#"SELECT pkc.profile_id, pkc.cookies
            FROM platform_kol_cookies pkc

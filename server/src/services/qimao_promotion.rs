@@ -25,6 +25,18 @@ use crate::services::upstream_error::{CallOutcome, UpstreamError};
 pub const SERVICE_NAME: &str = "qimao_promotion";
 pub const ENDPOINT_BOOK_INDEX: &str = "data/book/index";
 pub const ENDPOINT_SIGNIN: &str = "user/signin";
+
+/// 七猫平台在 token 失效时**返回 HTTP 200**(不是 401),把"未登录"
+/// 信号塞在 envelope `code=401` 里(成功是 `code=200`)。每个端点都
+/// 走这个套路,实测验证(2026-05-08):
+///
+/// - GET /api/v1/data/book/index 不带 token  → 200 + `code=401, message="没有携带token"`
+/// - GET /api/v1/data/book/index 带假 token → 200 + `code=401, message="用户不存在"`
+///
+/// 在每个解析点把这个 code 主动 map 成 `UpstreamError::AuthFailed`,
+/// workers 用 `is_auth_failure()` 即可触发自愈逻辑(详见
+/// `qimao_account::recover_or_offline`)。
+pub const QIMAO_AUTH_FAIL_CODE: i32 = 401;
 pub const ENDPOINT_KEYWORD_PRECHECK: &str = "promotion/keyword_precheck";
 pub const ENDPOINT_ADD_KEYWORDS: &str = "promotion/add_keywords";
 pub const ENDPOINT_KEYWORD_PAGE: &str = "promotion/keyword_page";
@@ -118,6 +130,10 @@ async fn fetch_book_page_inner(
         serde_json::from_str(&body_text).map_err(|e| UpstreamError::Parse(e.to_string()))?;
     match envelope.code {
         200 => Ok(envelope.data.map(|d| d.list).unwrap_or_default()),
+        QIMAO_AUTH_FAIL_CODE => Err(UpstreamError::AuthFailed {
+            status: 200,
+            body_preview: format!("code={} message={}", envelope.code, envelope.message),
+        }),
         other => Err(UpstreamError::ApiCode {
             code: other,
             message: format!("[UNKNOWN CODE {other}] {}", envelope.message),
@@ -296,6 +312,10 @@ async fn keyword_precheck_inner(
     match env.code {
         // 200: success — reject_reason="" means OK, non-empty means rejected keyword
         200 => Ok(env.data.unwrap_or_default().reject_reason),
+        QIMAO_AUTH_FAIL_CODE => Err(UpstreamError::AuthFailed {
+            status: 200,
+            body_preview: format!("code={} message={}", env.code, env.message),
+        }),
         other => Err(UpstreamError::ApiCode {
             code: other,
             message: format!("[UNKNOWN CODE {other}] {}", env.message),
@@ -354,6 +374,10 @@ async fn add_keywords_inner(
         serde_json::from_str(&body_text).map_err(|e| UpstreamError::Parse(e.to_string()))?;
     match env.code {
         200 => {}
+        QIMAO_AUTH_FAIL_CODE => return Err(UpstreamError::AuthFailed {
+            status: 200,
+            body_preview: format!("code={} message={}", env.code, env.message),
+        }),
         other => return Err(UpstreamError::ApiCode {
             code: other,
             message: format!("[UNKNOWN CODE {other}] {}", env.message),
@@ -444,6 +468,10 @@ async fn keyword_page_inner(
         serde_json::from_str(&body_text).map_err(|e| UpstreamError::Parse(e.to_string()))?;
     match env.code {
         200 => Ok(env.data.map(|d| d.list).unwrap_or_default()),
+        QIMAO_AUTH_FAIL_CODE => Err(UpstreamError::AuthFailed {
+            status: 200,
+            body_preview: format!("code={} message={}", env.code, env.message),
+        }),
         other => Err(UpstreamError::ApiCode {
             code: other,
             message: format!("[UNKNOWN CODE {other}] {}", env.message),
@@ -500,6 +528,10 @@ async fn add_keyword_links_inner(
         serde_json::from_str(&body_text).map_err(|e| UpstreamError::Parse(e.to_string()))?;
     match env.code {
         200 => {}
+        QIMAO_AUTH_FAIL_CODE => return Err(UpstreamError::AuthFailed {
+            status: 200,
+            body_preview: format!("code={} message={}", env.code, env.message),
+        }),
         other => return Err(UpstreamError::ApiCode {
             code: other,
             message: format!("[UNKNOWN CODE {other}] {}", env.message),

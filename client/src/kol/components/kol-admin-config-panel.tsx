@@ -8,30 +8,31 @@ import { KolAdminPanel } from "./kol-admin-panel";
 import { KolApiLogPanel } from "./kol-api-log-panel";
 import { KolEmailSettingsPanel } from "./kol-email-settings-panel";
 import { KolGlobalSettingsPanel } from "./kol-global-settings-panel";
-import { KolIncomePanel } from "./kol-income-panel";
 import { KolJobsPanel } from "./kol-jobs-panel";
 import { KolPasswordChangeButton } from "./kol-password-change-dialog";
 import { KolQimaoBooksPanel } from "./kol-qimao-books-panel";
-import { KolQimaoNoticePanel } from "./kol-qimao-notice-panel";
 import { KolSideNav, type NavGroup } from "./kol-side-nav";
-import { KolSubmissionConfigPanel } from "./kol-submission-config-panel";
+import { KolSubmissionDefaultsPanel } from "./kol-submission-defaults-panel";
 import { KolTomatoBooksPanel } from "./kol-tomato-books-panel";
 
 const ADMIN_GROUPS: NavGroup[] = [
   {
     label: "提交配置",
     items: [
-      { value: "submission-config", label: "词提交配置" },
+      // 注意:这里只编辑 (platform, alias_type) 维度的「默认值」,
+      // 仅作用于新建 profile 时的初始值。每个用户的具体 profile 配置
+      // 由用户自己在主面板「我的提交词配置」里维护。
+      { value: "submission-defaults", label: "默认提交配置" },
       { value: "global-settings", label: "全局设置" },
     ],
   },
   {
     label: "平台数据",
     items: [
+      // 番茄/七猫收益已移到主面板「我的账号池」,所有用户都能看自己的;
+      // 管理员要看全员视角走 [管理员速览] 邮件 digest。
       { value: "tomato-books", label: "番茄书籍" },
       { value: "qimao-books", label: "七猫书籍" },
-      { value: "income", label: "番茄收益" },
-      { value: "qimao-notice", label: "七猫收益通知" },
     ],
   },
   {
@@ -52,7 +53,7 @@ const ADMIN_GROUPS: NavGroup[] = [
 
 export function KolAdminConfigPanel() {
   const { user, isAdmin, logout } = useKolAuth();
-  const [active, setActive] = useState("submission-config");
+  const [active, setActive] = useState("submission-defaults");
 
   if (!user) return null;
 
@@ -85,12 +86,10 @@ export function KolAdminConfigPanel() {
       <div className="flex flex-1 min-h-0">
         <KolSideNav groups={ADMIN_GROUPS} active={active} onChange={setActive} />
         <div className="flex-1 overflow-auto p-4">
-          {active === "submission-config" && <KolSubmissionConfigPanel />}
+          {active === "submission-defaults" && <KolSubmissionDefaultsPanel />}
           {active === "global-settings" && <KolGlobalSettingsPanel />}
           {active === "tomato-books" && <KolTomatoBooksPanel />}
           {active === "qimao-books" && <KolQimaoBooksPanel />}
-          {active === "income" && <KolIncomePanel />}
-          {active === "qimao-notice" && <KolQimaoNoticePanel />}
           {active === "jobs" && <KolJobsPanel />}
           {active === "api-log" && <KolApiLogPanel />}
           {active === "users" && <KolAdminPanel currentUserId={user.id} />}

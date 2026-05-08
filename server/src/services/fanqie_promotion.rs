@@ -44,6 +44,21 @@ pub const ALIAS_TYPE_AUDIO: i32 = 2;
 pub const ALIAS_TYPE_WUKONG: i32 = 6;
 pub const ALIAS_TYPES: &[i32] = &[ALIAS_TYPE_NOVEL, ALIAS_TYPE_AUDIO, ALIAS_TYPE_WUKONG];
 
+/// 番茄达人在 cookie 失效时**返回 HTTP 200**(不是 401/403),把"未登录"
+/// 信号塞在 envelope `code=10001 / message="未登录"` 里。这是头条系平台
+/// 的一贯做法。响应头里的 `x-tt-agw-login: 0` 也确认了这一点。
+///
+/// 我们在每个 fanqie 解析点都要把这个 code 主动 map 成
+/// `UpstreamError::AuthFailed`,否则它落进 `ApiCode` 类别 —
+/// `is_auth_failure()` 不会命中,workers 也不会调 `mark_offline`,
+/// cookie 死了系统也不知道,通知发不出来。
+///
+/// 用本地 abogus + DB 中的 cookie 实测验证过(2026-05-08):
+/// - GET /api/platform/user/income/stats 不带 cookie → 200 + code=10001
+/// - GET /api/platform/promotion/plan/list 不带 cookie → 200 + code=10001
+/// - POST /api/platform/promotion/plan/create 不带 cookie → 200 + code=10001
+pub const FANQIE_AUTH_FAIL_CODE: i32 = 10001;
+
 /// Per-alias review status reported by `promotion/plan/list`. Sourced
 /// from the platform's filter dropdown; values 1–6.
 pub const ALIAS_STATUS_ACTIVE: i32 = 1;          // 生效中
@@ -198,6 +213,11 @@ async fn submit_alias_inner(
     match envelope.code {
         // ── Known success ──────────────────────────────────────────────
         0 => {}
+        // ── 未登录 (cookie 失效) — map 成 AuthFailed,workers 会调 mark_offline
+        FANQIE_AUTH_FAIL_CODE => return Err(UpstreamError::AuthFailed {
+            status: 200,
+            body_preview: format!("code={} message={}", envelope.code, envelope.message),
+        }),
         // ── Known business errors ──────────────────────────────────────
         // 30001: 别名审核不通过 — permanent, do not retry
         30001 => return Err(UpstreamError::ApiCode {
@@ -396,6 +416,11 @@ async fn submit_post_inner(
     match envelope.code {
         // ── Known success ──────────────────────────────────────────────
         0 => Ok(()),
+        // ── 未登录 — workers will mark_offline ──────────────────────────
+        FANQIE_AUTH_FAIL_CODE => Err(UpstreamError::AuthFailed {
+            status: 200,
+            body_preview: format!("code={} message={}", envelope.code, envelope.message),
+        }),
         // ── Known business errors ──────────────────────────────────────
         // 10004: 推广计划不存在或当前状态无法回填 — retry with cooldown
         10004 => Err(UpstreamError::ApiCode {
@@ -510,6 +535,11 @@ async fn query_alias_status_inner(
     match envelope.code {
         // ── Known success ──────────────────────────────────────────────
         0 => {}
+        // ── 未登录 — workers will mark_offline ──────────────────────────
+        FANQIE_AUTH_FAIL_CODE => return Err(UpstreamError::AuthFailed {
+            status: 200,
+            body_preview: format!("code={} message={}", envelope.code, envelope.message),
+        }),
         // ── Unknown ────────────────────────────────────────────────────
         other => return Err(UpstreamError::ApiCode {
             code: other,

@@ -4,6 +4,7 @@ pub mod cache;
 pub mod submission_router;
 pub mod api_log;
 pub mod email_sender;
+pub mod email_template;
 pub mod fanqie_income;
 pub mod fanqie_promotion;
 pub mod http_retry;

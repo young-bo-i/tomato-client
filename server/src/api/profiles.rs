@@ -62,6 +62,13 @@ pub async fn create(
     body: web::Json<CreateProfileRequest>,
 ) -> AppResult<HttpResponse> {
     let b = body.into_inner();
+    // For douyin profiles we optimistically default `douyin_login_state`
+    // to `authenticated` at creation time. Rationale: the user just
+    // logged in inside the browser and synced the profile to the
+    // server; assuming online keeps the dashboard from showing a
+    // misleading "未登录" badge until the collection extension fires.
+    // The collection extension will overwrite this with the real state
+    // on first run (push_douyin_state from kol-ext via /douyin_state).
     let result = sqlx::query_as::<_, BrowserProfile>(
         r#"INSERT INTO browser_profiles (
               id, user_id, name, browser, version, release_type, proxy_id, vpn_id,
@@ -69,10 +76,13 @@ pub async fn create(
               wayfern_config, sync_mode, encryption_salt, last_sync, last_launch,
               host_os, ephemeral, proxy_bypass_rules, created_by_id,
               created_by_email, dns_blocklist, kol_platform,
-              qimao_identifier, qimao_credential
+              qimao_identifier, qimao_credential,
+              douyin_login_state, douyin_login_state_updated_at
            ) VALUES (
               $1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15,
-              $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27
+              $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27,
+              CASE WHEN $25 = 'douyin' THEN 'authenticated' ELSE NULL END,
+              CASE WHEN $25 = 'douyin' THEN NOW()             ELSE NULL END
            )
            RETURNING id, user_id, name, browser, version, release_type, proxy_id, vpn_id,
                     group_id, extension_group_id, tags, note, camoufox_config,
@@ -129,37 +139,39 @@ pub async fn create(
     }
 }
 
-/// Insert default kol_submission_config rows for a newly created profile.
-/// Uses ON CONFLICT DO NOTHING so re-creation (e.g. import) is idempotent.
+/// Insert per-profile kol_submission_config rows for a newly created
+/// profile, using `kol_submission_config_defaults` (admin-managed) as
+/// the initial values. Uses ON CONFLICT DO NOTHING so re-creation
+/// (e.g. import) is idempotent — existing per-profile rows win, the
+/// admin's defaults table only seeds rows that don't already exist.
+///
+/// Platform mismatches (e.g. defaults table has alias_type 1/2/6 for
+/// tomato; we copy whatever's there). Filter by platform so changing
+/// kol_platform from douyin to tomato later only seeds tomato rows.
 async fn seed_default_submission_config(
     pool: &crate::db::DbPool,
     profile_id: uuid::Uuid,
     kol_platform: Option<&str>,
 ) {
-    const DEFAULT_LIMIT: i32 = 300;
-
-    let configs: &[(&str, i32)] = match kol_platform {
-        Some("tomato") => &[("tomato", 1), ("tomato", 2), ("tomato", 6)],
-        Some("qimao") => &[("qimao", 1)],
+    let platform = match kol_platform {
+        Some(p @ ("tomato" | "qimao")) => p,
         _ => return, // douyin / none — no submission config needed
     };
 
-    for (platform, alias_type) in configs {
-        if let Err(e) = sqlx::query(
-            r#"INSERT INTO kol_submission_config
-                   (profile_id, platform, alias_type, enabled, daily_limit)
-               VALUES ($1, $2, $3, TRUE, $4)
-               ON CONFLICT (profile_id, platform, alias_type) DO NOTHING"#,
-        )
-        .bind(profile_id)
-        .bind(platform)
-        .bind(alias_type)
-        .bind(DEFAULT_LIMIT)
-        .execute(pool)
-        .await
-        {
-            tracing::warn!("seed_default_submission_config {profile_id}: {e}");
-        }
+    if let Err(e) = sqlx::query(
+        r#"INSERT INTO kol_submission_config
+               (profile_id, platform, alias_type, enabled, daily_limit)
+           SELECT $1, platform, alias_type, enabled, daily_limit
+             FROM kol_submission_config_defaults
+            WHERE platform = $2
+           ON CONFLICT (profile_id, platform, alias_type) DO NOTHING"#,
+    )
+    .bind(profile_id)
+    .bind(platform)
+    .execute(pool)
+    .await
+    {
+        tracing::warn!("seed_default_submission_config {profile_id}: {e}");
     }
 }
 
@@ -314,6 +326,15 @@ pub async fn update(
         .fetch_optional(pool.get_ref())
         .await?
         .ok_or_else(|| AppError::NotFound(format!("profile {id}")))?;
+
+    // If kol_platform was just set/changed to tomato/qimao, seed the
+    // per-profile rows from defaults. ON CONFLICT DO NOTHING preserves
+    // any existing rows (e.g. when user toggles tomato → douyin → tomato,
+    // their previously-edited config is kept).
+    if b.kol_platform.is_some() {
+        seed_default_submission_config(pool.get_ref(), row.id, row.kol_platform.as_deref()).await;
+        crate::services::cache::invalidate_submission_config();
+    }
 
     Ok(HttpResponse::Ok().json(row))
 }

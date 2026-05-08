@@ -150,6 +150,15 @@ async fn fetch_income_inner(
         serde_json::from_str(&body_text).map_err(|e| UpstreamError::Parse(e.to_string()))?;
 
     if envelope.code != 0 {
+        // 未登录 → AuthFailed,workers 触发 mark_offline (实测 fanqie
+        // 在 cookie 失效时返回 HTTP 200 + code=10001,详见
+        // services::fanqie_promotion::FANQIE_AUTH_FAIL_CODE 注释)。
+        if envelope.code == crate::services::fanqie_promotion::FANQIE_AUTH_FAIL_CODE {
+            return Err(UpstreamError::AuthFailed {
+                status: 200,
+                body_preview: format!("code={} message={}", envelope.code, envelope.message),
+            });
+        }
         return Err(UpstreamError::ApiCode {
             code: envelope.code,
             message: format!("[UNKNOWN CODE {}] {}", envelope.code, envelope.message),

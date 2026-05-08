@@ -2437,6 +2437,24 @@ pub async fn launch_browser_profile(
   // (Cancelled in `kill_browser_profile`.)
   crate::state_sync::start_periodic_push(updated_profile.id);
 
+  // 对 douyin profile,启动后立即推送 state=authenticated 到 server。
+  // 用户掉线后只要打开浏览器(就视为重新登录),立即恢复在线 — 即使
+  // 采集扩展还没来得及实际探测一次。后续扩展若检测到未登录,会再推
+  // unauthenticated 覆盖,所以这是"乐观假设 + 后续修正"。server 端
+  // set_douyin_state 在 state=authenticated 时会清 douyin_offline_
+  // notified_at,下一次掉线就能重新触发邮件通知。
+  if updated_profile.kol_platform.as_deref() == Some("douyin") {
+    let pid = updated_profile.id;
+    tokio::spawn(async move {
+      if let Err(e) = crate::kol_client::KOL_CLIENT
+        .push_douyin_state(pid, "authenticated", None)
+        .await
+      {
+        log::warn!("launch: push_douyin_state(authenticated) {pid}: {e}");
+      }
+    });
+  }
+
   Ok(updated_profile)
 }
 

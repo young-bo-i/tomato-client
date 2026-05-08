@@ -1,16 +1,16 @@
 pub mod admin_api_log;
-pub mod admin_income;
 pub mod admin_jobs;
 pub mod admin_kol_config;
-pub mod admin_qimao_notice;
 pub mod admin_settings;
 pub mod admin_users;
 pub mod auth;
 pub mod douyin_videos;
 pub mod email_settings;
+pub mod income;
 pub mod profile_state;
 pub mod profiles;
 pub mod qimao;
+pub mod qimao_notice;
 pub mod qimao_stats;
 pub mod tomato;
 pub mod tomato_stats;
@@ -42,7 +42,21 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
                     .route(
                         "/password",
                         web::put().to(users_self::change_my_password),
-                    ),
+                    )
+                    .route(
+                        "/kol_config",
+                        web::get().to(admin_kol_config::list_mine),
+                    )
+                    .route(
+                        "/kol_config",
+                        web::put().to(admin_kol_config::update_mine),
+                    )
+                    // 番茄收益 & 七猫收益通知 — caller-scoped (each user
+                    // sees only their own profiles' rows; admins use
+                    // the [管理员速览] email digest for全员视角).
+                    .route("/income", web::get().to(income::list))
+                    .route("/income/overview", web::get().to(income::overview))
+                    .route("/qimao_notices", web::get().to(qimao_notice::list)),
             )
             .service(
                 web::scope("/admin/users")
@@ -68,9 +82,12 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
                     .route("/{name}/history", web::get().to(admin_jobs::history)),
             )
             .service(
-                web::scope("/admin/kol_config")
-                    .route("", web::get().to(admin_kol_config::list))
-                    .route("", web::put().to(admin_kol_config::update)),
+                // Admin-only defaults editor. Used as initial values
+                // when creating new tomato/qimao profiles; doesn't
+                // touch existing per-profile rows.
+                web::scope("/admin/kol_config_defaults")
+                    .route("", web::get().to(admin_kol_config::list_defaults))
+                    .route("", web::put().to(admin_kol_config::update_defaults)),
             )
             .service(
                 web::scope("/admin/api_log")
@@ -78,15 +95,6 @@ pub fn configure(cfg: &mut web::ServiceConfig) {
                     .route("", web::delete().to(admin_api_log::delete))
                     .route("/mark", web::post().to(admin_api_log::mark))
                     .route("/export", web::get().to(admin_api_log::export)),
-            )
-            .service(
-                web::scope("/admin/income")
-                    .route("", web::get().to(admin_income::list))
-                    .route("/overview", web::get().to(admin_income::overview)),
-            )
-            .service(
-                web::scope("/admin/qimao_notices")
-                    .route("", web::get().to(admin_qimao_notice::list)),
             )
             .service(
                 web::scope("/profiles")

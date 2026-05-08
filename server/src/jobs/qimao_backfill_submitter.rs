@@ -206,13 +206,13 @@ async fn handle_row(
             {
                 Ok(items) => items,
                 Err(err) if err.is_auth_failure() => {
-                    qimao_account::invalidate_token(
+                    qimao_account::recover_or_offline(
                         pool,
+                        http,
                         selected.profile_id,
                         &format!("keyword_page: {err}"),
                     )
-                    .await
-                    .ok();
+                    .await;
                     return RowOutcome::TokenDead;
                 }
                 Err(err) => {
@@ -364,13 +364,13 @@ async fn handle_row(
             RowOutcome::Ok
         }
         Err(err) if err.is_auth_failure() => {
-            qimao_account::invalidate_token(
+            qimao_account::recover_or_offline(
                 pool,
+                http,
                 selected.profile_id,
                 &format!("add_keyword_links: {err}"),
             )
-            .await
-            .ok();
+            .await;
             RowOutcome::TokenDead
         }
         Err(err) => {

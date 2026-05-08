@@ -259,9 +259,9 @@ async fn handle_user_with_data(
     }
 
     let subject = format!("Tomato KOL · 账号掉线提醒 ({} 个)", rows.len());
-    let body = render_body(&username, &rows);
+    let body = render_body_html(&username, &rows);
 
-    email_sender::send(settings, &[email.clone()], &subject, &body)
+    email_sender::send_html(settings, &[email.clone()], &subject, &body)
         .await
         .map_err(|e| format!("smtp send to {email}: {e}"))?;
 
@@ -283,15 +283,13 @@ fn human_label(platform: &str) -> &'static str {
     }
 }
 
-fn render_body(username: &str, rows: &[OfflineRow]) -> String {
-    use std::fmt::Write as _;
-    let mut buf = String::new();
-    let _ = writeln!(
-        buf,
-        "您好 {username},\n\n以下 KOL 账号已掉线,需要重新登录:\n"
-    );
+/// Mobile-friendly HTML version of the offline alert. One card per
+/// offline profile; "新增掉线"标记 (NEW) 用强调色突出,让管理员
+/// 在邮件预览里一眼就能区分新事件和未恢复的老事件。
+fn render_body_html(username: &str, rows: &[OfflineRow]) -> String {
+    use crate::services::email_template::{card, email_shell, html_escape, Field};
 
-    // Group by platform label for readability.
+    // Group by platform for clearer scrolling on mobile.
     let mut by_platform: HashMap<&str, Vec<&OfflineRow>> = HashMap::new();
     for r in rows {
         by_platform.entry(r.platform.as_str()).or_default().push(r);
@@ -299,40 +297,65 @@ fn render_body(username: &str, rows: &[OfflineRow]) -> String {
     let mut groups: Vec<&str> = by_platform.keys().copied().collect();
     groups.sort();
 
+    let new_count = rows.iter().filter(|r| r.is_new).count();
+    let title = "账号掉线提醒";
+    let subtitle = format!(
+        "{} 共 {} 个账号当前掉线(本轮新增 {} 个),请尽快重新登录",
+        username,
+        rows.len(),
+        new_count
+    );
+
+    let mut content = String::new();
     for g in groups {
-        let _ = writeln!(buf, "【{}】", g);
+        // Group section header — small uppercase label above the cards.
+        content.push_str(&format!(
+            r#"<div style="font-size:11px;letter-spacing:0.5px;text-transform:uppercase;color:#9aa0a6;margin:14px 4px 4px;font-weight:600;">{}</div>"#,
+            html_escape(g)
+        ));
+
         for r in by_platform[g].iter() {
             let when = r
                 .last_offline_at
                 .map(|dt| dt.format("%Y-%m-%d %H:%M:%S").to_string())
                 .unwrap_or_else(|| "—".to_string());
-            let reason_part = r
+            let reason = r
                 .reason
                 .as_deref()
                 .filter(|s| !s.is_empty())
-                .map(|s| format!("   原因: {s}"))
-                .unwrap_or_default();
-            let detail_part = r
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "—".to_string());
+            let detail = r
                 .detail_label
                 .as_deref()
                 .filter(|s| !s.is_empty())
-                .map(|s| format!("   ({s})"))
-                .unwrap_or_default();
-            let new_marker = if r.is_new { " [NEW]" } else { "" };
-            let _ = writeln!(
-                buf,
-                "  · {}{}   最近掉线: {}{}{}",
-                r.profile_name, new_marker, when, detail_part, reason_part
-            );
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "—".to_string());
+
+            let new_label = if r.is_new { "🆕 新增掉线" } else { "未恢复" };
+            let when_e = html_escape(&when);
+            let reason_e = html_escape(&reason);
+            let detail_e = html_escape(&detail);
+            let new_label_e = html_escape(new_label);
+
+            let fields = [
+                Field { label: "状态", value: &new_label_e, highlight: r.is_new },
+                Field { label: "最近掉线", value: &when_e, highlight: false },
+                Field { label: "明细", value: &detail_e, highlight: false },
+                Field { label: "原因", value: &reason_e, highlight: false },
+            ];
+
+            content.push_str(&card(
+                &r.profile_name,
+                Some(g),
+                &fields,
+            ));
         }
-        buf.push('\n');
     }
 
-    let _ = writeln!(
-        buf,
-        "请在 Donut 客户端重新登录这些账号。账号恢复后下次再次掉线会触发新的提醒。"
-    );
-    buf
+    let footer =
+        "请在 Donut 客户端重新登录这些账号。账号恢复后再次掉线会触发新的提醒。";
+    email_shell(title, Some(&subtitle), &content, Some(footer))
 }
 
 async fn stamp_notified(pool: &DbPool, rows: &[OfflineRow]) -> Result<(), String> {

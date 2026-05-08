@@ -189,15 +189,28 @@ pub async fn send_test(
     };
 
     let subject = "Tomato KOL · 测试邮件";
-    let body_text = format!(
-        "这是一封测试邮件,用于验证 SMTP 配置是否正常。\n\n\
-         发件主机: {}:{}\n\
-         发件地址: {}\n\
-         收件人: {}\n",
-        settings.smtp_host, settings.smtp_port, settings.from_address, to_addr
+
+    // Mobile-friendly HTML — admin clicks "send test" from the UI and
+    // sees the same chrome they'd see for a real notification.
+    use crate::services::email_template::{card, email_shell, html_escape, Field};
+    let host_str = format!("{}:{}", settings.smtp_host, settings.smtp_port);
+    let host_e = html_escape(&host_str);
+    let from_e = html_escape(&settings.from_address);
+    let to_e = html_escape(&to_addr);
+    let fields = [
+        Field { label: "发件主机", value: &host_e, highlight: false },
+        Field { label: "发件地址", value: &from_e, highlight: false },
+        Field { label: "收件人", value: &to_e, highlight: false },
+    ];
+    let content = card("SMTP 测试邮件", Some("如果你看到这封邮件,SMTP 配置就是正常的"), &fields);
+    let body_html = email_shell(
+        subject,
+        Some("用于验证邮件服务能否正常发送"),
+        &content,
+        Some("Tomato KOL · 自动测试通知"),
     );
 
-    match email_sender::send(&settings, &[to_addr.clone()], subject, &body_text).await {
+    match email_sender::send_html(&settings, &[to_addr.clone()], subject, &body_html).await {
         Ok(()) => Ok(HttpResponse::Ok().json(json!({ "ok": true, "to": to_addr }))),
         Err(e) => Ok(HttpResponse::BadGateway().json(json!({
             "ok": false, "error": e

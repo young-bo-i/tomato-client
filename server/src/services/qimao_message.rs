@@ -131,6 +131,13 @@ async fn list_notices_inner(
     match env.code {
         // qimao convention: code=200 = success.
         200 => Ok(env.data.map(|d| d.list).unwrap_or_default()),
+        // 401 in envelope = token 失效。Map 成 AuthFailed 让 worker 走自愈。
+        crate::services::qimao_promotion::QIMAO_AUTH_FAIL_CODE => {
+            Err(UpstreamError::AuthFailed {
+                status: 200,
+                body_preview: format!("code={} message={}", env.code, env.message),
+            })
+        }
         other => Err(UpstreamError::ApiCode {
             code: other,
             message: format!("[UNKNOWN CODE {other}] {}", env.message),

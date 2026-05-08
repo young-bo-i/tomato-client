@@ -1,8 +1,11 @@
-//! Admin-only read endpoints for the income panel.
+//! Caller-scoped read endpoints for the 番茄达人 income panel.
 //!
-//! `GET /api/admin/income` — one row per tomato profile that has been
-//! polled at least once, joined to `browser_profiles` + `users` so
-//! the UI can render account name + owner without follow-up queries.
+//! `GET /api/users/me/income` — every income row for the caller's
+//! tomato profiles (admin sees only THEIR own profiles too — the
+//! all-users digest is delivered via email, "[管理员速览]").
+//!
+//! `GET /api/users/me/income/overview` — sum-row across the caller's
+//! tomato profiles for the panel header.
 //!
 //! All amounts are 整数分 (cents); the UI divides by 100. The verbose
 //! per-task / weekly / monthly breakdowns are returned verbatim as
@@ -15,13 +18,12 @@ use serde_json::Value as JsonValue;
 use sqlx::FromRow;
 use uuid::Uuid;
 
-use crate::auth::AdminUser;
+use crate::auth::AuthUser;
 use crate::db::DbPool;
 use crate::errors::AppResult;
 
-/// One row in the admin income panel. Sorted by total_income DESC by
-/// default — top earners first — matching the index already on
-/// `kol_income.total_income`.
+/// One row in the income panel. Sorted by total_income DESC so the
+/// caller's top-earner is on top.
 #[derive(Debug, Serialize, FromRow)]
 pub struct IncomeRow {
     pub profile_id: Uuid,
@@ -41,38 +43,25 @@ pub struct IncomeRow {
     /// means upstream hasn't computed any income yet for this account.
     pub latest_update_time: Option<DateTime<Local>>,
 
-    /// Verbatim arrays from upstream — the UI iterates these for
-    /// historical breakdown.
+    /// Verbatim arrays from upstream — UI iterates these.
     pub weekly_income_list: Option<JsonValue>,
     pub monthly_income_list: Option<JsonValue>,
     pub task_income_list: Option<JsonValue>,
 
-    /// Most-recent positive jump we've recorded. `last_diff = 0` means
-    /// no forward movement has been observed yet (or the row was just
-    /// created with the upstream's already-final total).
     pub last_diff: i64,
     pub last_diff_at: Option<DateTime<Local>>,
 
-    /// When the diff email for `last_diff_at` was successfully sent.
-    /// `last_emailed_at < last_diff_at` (or NULL) means the diff is
-    /// pending email — usually the previous round's SMTP attempt
-    /// failed; check `last_email_error`.
     pub last_emailed_at: Option<DateTime<Local>>,
-    /// Most recent SMTP failure reason, verbatim. Cleared on next
-    /// successful send. Hover-tooltip in the admin panel.
     pub last_email_error: Option<String>,
 
-    /// Heartbeat — when this row was last refreshed by the poller.
     pub fetched_at: DateTime<Local>,
 }
 
-/// `GET /api/admin/income` — list all polled tomato accounts with
-/// their latest income snapshot, sorted by total_income DESC.
-///
-/// Includes inactive owners' rows too (admin still wants to see what
-/// they earned before being deactivated). UI can filter client-side
-/// if needed.
-pub async fn list(pool: web::Data<DbPool>, _: AdminUser) -> AppResult<HttpResponse> {
+/// `GET /api/users/me/income` — list the caller's polled tomato
+/// accounts with their latest income snapshot, sorted by total_income
+/// DESC. Filter by `bp.user_id = caller`, so admin sees only their
+/// own profiles too (cross-user view goes via the [管理员速览] email).
+pub async fn list(pool: web::Data<DbPool>, user: AuthUser) -> AppResult<HttpResponse> {
     let rows = sqlx::query_as::<_, IncomeRow>(
         r#"SELECT
               ki.profile_id,
@@ -90,16 +79,18 @@ pub async fn list(pool: web::Data<DbPool>, _: AdminUser) -> AppResult<HttpRespon
            FROM kol_income ki
            JOIN browser_profiles bp ON bp.id = ki.profile_id
            JOIN users u             ON u.id = bp.user_id
+           WHERE bp.user_id = $1
            ORDER BY ki.total_income DESC, bp.name ASC"#,
     )
+    .bind(user.0.sub)
     .fetch_all(pool.get_ref())
     .await?;
 
     Ok(HttpResponse::Ok().json(rows))
 }
 
-/// Aggregated overview for the panel header — one row of totals
-/// summed across every polled account.
+/// Aggregated overview — one row of totals summed across the caller's
+/// polled accounts.
 #[derive(Debug, Serialize)]
 pub struct IncomeOverview {
     pub account_count: i64,
@@ -108,26 +99,27 @@ pub struct IncomeOverview {
     pub bonus_income: i64,
     pub current_week_income: i64,
     pub current_month_income: i64,
-    /// Most recent fetched_at across all rows — proxy for "is the
-    /// poller alive".
     pub last_fetched_at: Option<DateTime<Local>>,
 }
 
-/// `GET /api/admin/income/overview` — sum-row for the top of the
-/// panel. Single query, no caching (the underlying table is small —
-/// up to a few hundred rows).
-pub async fn overview(pool: web::Data<DbPool>, _: AdminUser) -> AppResult<HttpResponse> {
+/// `GET /api/users/me/income/overview` — sum-row for the top of the
+/// panel. SUM(BIGINT) returns NUMERIC in Postgres (overflow guard);
+/// the explicit `::BIGINT` cast keeps sqlx happy reading into i64.
+pub async fn overview(pool: web::Data<DbPool>, user: AuthUser) -> AppResult<HttpResponse> {
     let row: (i64, i64, i64, i64, i64, i64, Option<DateTime<Local>>) = sqlx::query_as(
         r#"SELECT
-              COUNT(*)                         AS account_count,
-              COALESCE(SUM(total_income), 0)   AS total_income,
-              COALESCE(SUM(regular_income), 0) AS regular_income,
-              COALESCE(SUM(bonus_income), 0)   AS bonus_income,
-              COALESCE(SUM(current_week_income), 0)  AS current_week_income,
-              COALESCE(SUM(current_month_income), 0) AS current_month_income,
-              MAX(fetched_at)                  AS last_fetched_at
-           FROM kol_income"#,
+              COUNT(*)                                            AS account_count,
+              COALESCE(SUM(ki.total_income), 0)::BIGINT           AS total_income,
+              COALESCE(SUM(ki.regular_income), 0)::BIGINT         AS regular_income,
+              COALESCE(SUM(ki.bonus_income), 0)::BIGINT           AS bonus_income,
+              COALESCE(SUM(ki.current_week_income), 0)::BIGINT    AS current_week_income,
+              COALESCE(SUM(ki.current_month_income), 0)::BIGINT   AS current_month_income,
+              MAX(ki.fetched_at)                                  AS last_fetched_at
+           FROM kol_income ki
+           JOIN browser_profiles bp ON bp.id = ki.profile_id
+           WHERE bp.user_id = $1"#,
     )
+    .bind(user.0.sub)
     .fetch_one(pool.get_ref())
     .await?;
 

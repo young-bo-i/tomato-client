@@ -38,6 +38,7 @@ use uuid::Uuid;
 
 use crate::db::DbPool;
 use crate::services::email_sender::{self, EmailSettings};
+use crate::services::email_template::{card, email_shell, html_escape as tpl_escape, Field};
 use crate::services::fanqie_income::{
     build_http_client, fetch_income, IncomeData, IncomeRecord, ENDPOINT_INCOME_STATS,
     SERVICE_NAME,
@@ -568,85 +569,54 @@ async fn mark_email_error(pool: &DbPool, profile_ids: &[Uuid], reason: &str) {
     }
 }
 
-/// Render the digest email body. Inline-styled HTML so it looks OK in
-/// most clients without a stylesheet. Single table per recipient
-/// listing every changed account with its diff + key counters.
+/// Render the digest email body using the shared mobile-friendly
+/// template. Each profile becomes a stacked card (instead of one wide
+/// table) so it scrolls cleanly on phone screens. The most important
+/// number — "本次新增" — gets the highlight style (green + bold).
 fn render_diff_email_body(items: &[&EmailableUpdate]) -> String {
-    use std::fmt::Write as _;
     let now_str = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
     let total_diff: i64 = items.iter().map(|u| u.diff).sum();
 
-    let mut html = String::new();
-    let _ = writeln!(
-        html,
-        r#"<!doctype html>
-<html><body style="font-family: -apple-system, BlinkMacSystemFont, 'Helvetica Neue', sans-serif; color:#222; line-height:1.5;">
-<h2 style="margin:0 0 12px;color:#1a73e8;">番茄达人收益更新</h2>
-<p style="margin:0 0 8px;">检测到 <strong>{n}</strong> 个账号有新的收益结算,本次新增合计 <strong style="color:#0a8754;">+{total}</strong>。</p>
-<table style="border-collapse:collapse;width:100%;margin:16px 0;font-size:13px;">
-<thead><tr style="background:#f5f6f8;text-align:left;">
-<th style="padding:8px;border:1px solid #e5e6e8;">账号</th>
-<th style="padding:8px;border:1px solid #e5e6e8;">所属</th>
-<th style="padding:8px;border:1px solid #e5e6e8;text-align:right;">本次新增</th>
-<th style="padding:8px;border:1px solid #e5e6e8;text-align:right;">总收益</th>
-<th style="padding:8px;border:1px solid #e5e6e8;text-align:right;">常规</th>
-<th style="padding:8px;border:1px solid #e5e6e8;text-align:right;">激励</th>
-<th style="padding:8px;border:1px solid #e5e6e8;text-align:right;">本月</th>
-<th style="padding:8px;border:1px solid #e5e6e8;text-align:right;">本周</th>
-</tr></thead>
-<tbody>"#,
-        n = items.len(),
-        total = html_escape(&fmt_yuan(total_diff))
+    let title = "番茄达人收益更新";
+    let subtitle = format!(
+        "{} 个账号有新结算,本次新增合计 +{}",
+        items.len(),
+        fmt_yuan(total_diff)
     );
 
+    let mut content = String::new();
     for u in items {
-        let _ = writeln!(
-            html,
-            r#"<tr>
-<td style="padding:8px;border:1px solid #e5e6e8;">{name}</td>
-<td style="padding:8px;border:1px solid #e5e6e8;color:#666;">@{owner}</td>
-<td style="padding:8px;border:1px solid #e5e6e8;text-align:right;color:#0a8754;font-weight:600;">+{diff}</td>
-<td style="padding:8px;border:1px solid #e5e6e8;text-align:right;font-weight:600;">{total}</td>
-<td style="padding:8px;border:1px solid #e5e6e8;text-align:right;color:#666;">{regular}</td>
-<td style="padding:8px;border:1px solid #e5e6e8;text-align:right;color:#666;">{bonus}</td>
-<td style="padding:8px;border:1px solid #e5e6e8;text-align:right;">{month}</td>
-<td style="padding:8px;border:1px solid #e5e6e8;text-align:right;">{week}</td>
-</tr>"#,
-            name = html_escape(&u.profile.profile_name),
-            owner = html_escape(&u.profile.owner_username),
-            diff = html_escape(&fmt_yuan(u.diff)),
-            total = html_escape(&fmt_yuan(u.snapshot.total_income)),
-            regular = html_escape(&fmt_yuan(u.snapshot.regular_income)),
-            bonus = html_escape(&fmt_yuan(u.snapshot.bonus_income)),
-            month = html_escape(&fmt_yuan(u.snapshot.current_month_income)),
-            week = html_escape(&fmt_yuan(u.snapshot.current_week_income)),
-        );
+        let diff_str = format!("+{}", tpl_escape(&fmt_yuan(u.diff)));
+        let total_str = tpl_escape(&fmt_yuan(u.snapshot.total_income));
+        let regular_str = tpl_escape(&fmt_yuan(u.snapshot.regular_income));
+        let bonus_str = tpl_escape(&fmt_yuan(u.snapshot.bonus_income));
+        let month_str = tpl_escape(&fmt_yuan(u.snapshot.current_month_income));
+        let week_str = tpl_escape(&fmt_yuan(u.snapshot.current_week_income));
+
+        let secondary = format!("@{}", u.profile.owner_username);
+        let fields = [
+            Field { label: "本次新增", value: &diff_str, highlight: true },
+            Field { label: "总收益", value: &total_str, highlight: false },
+            Field { label: "常规收益", value: &regular_str, highlight: false },
+            Field { label: "激励收益", value: &bonus_str, highlight: false },
+            Field { label: "本月累计", value: &month_str, highlight: false },
+            Field { label: "本周累计", value: &week_str, highlight: false },
+        ];
+
+        content.push_str(&card(
+            &u.profile.profile_name,
+            Some(&secondary),
+            &fields,
+        ));
     }
 
-    let _ = writeln!(
-        html,
-        r#"</tbody></table>
-<p style="color:#888;font-size:12px;margin:16px 0 0;">采集时间:{ts} · 数据来源:番茄达人 user/income/stats</p>
-</body></html>"#,
-        ts = html_escape(&now_str)
-    );
-    html
+    let footer = format!("采集时间:{} · 数据来源:番茄达人 user/income/stats", now_str);
+    email_shell(title, Some(&subtitle), &content, Some(&footer))
 }
 
 /// 分 → 元, 2 decimal places, prefixed with ¥.
 fn fmt_yuan(cents: i64) -> String {
     format!("¥{:.2}", (cents as f64) / 100.0)
-}
-
-/// Minimal HTML-entity escape for user-controlled strings going into
-/// the email body. Profile/user names are admin-curated so injection
-/// risk is low, but still defend against `<` / `>` / `&` / `"` to
-/// avoid breaking the surrounding markup.
-fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('"', "&quot;")
 }
 
 
