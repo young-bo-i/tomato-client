@@ -380,6 +380,36 @@
   // Assembled at ▶️ click; nulled at ⏸ click.
   let gatherState = null;
 
+  // Toggle the declarativeNetRequest video/image blocking ruleset. The
+  // ruleset is OFF by default (see manifest.json) so manual browsing
+  // doesn't see flicker from blocked thumbnails — we flip it ON when
+  // gather starts, OFF when gather stops. Sent to background.js since
+  // chrome.declarativeNetRequest is only callable from the SW context.
+  // Best-effort: if Wayfern's SW is dormant the message no-ops silently
+  // and the worst case is "rules stay off during gather" — bandwidth
+  // not saved, but collection itself still works.
+  function setBlockingEnabled(enable) {
+    try {
+      chrome.runtime.sendMessage(
+        { kind: "set-block-enabled", enable: !!enable },
+        (resp) => {
+          if (chrome.runtime.lastError) {
+            console.warn(
+              "[kol-helper] block toggle (SW dormant?):",
+              chrome.runtime.lastError.message,
+            );
+            return;
+          }
+          if (!resp || !resp.ok) {
+            console.warn("[kol-helper] block toggle failed:", resp);
+          }
+        },
+      );
+    } catch (e) {
+      console.warn("[kol-helper] block toggle exception:", e);
+    }
+  }
+
   function extractActiveVideo() {
     // The canonical "currently visible" hook on Douyin's follow page is
     // `[data-e2e="feed-active-video"]`. Its data-e2e VALUE rotates as
@@ -619,6 +649,7 @@
       return;
     }
     console.log("[kol-helper] gather start");
+    setBlockingEnabled(true);
     gatherState = {
       seen: new Set(),
       // retryQueue holds rows that bounced off MAX_INFLIGHT_UPLOADS or
@@ -755,6 +786,7 @@
       "uploaded",
       gatherState.uploaded,
     );
+    setBlockingEnabled(false);
     // Tear down timers/observer first so no new rows enter the pipeline.
     if (gatherState.observer) gatherState.observer.disconnect();
     if (gatherState.slideTimer) clearInterval(gatherState.slideTimer);
