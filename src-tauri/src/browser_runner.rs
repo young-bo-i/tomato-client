@@ -2209,6 +2209,21 @@ impl BrowserRunner {
   }
 }
 
+/// kol_platform → 默认打开的 URL 映射。
+///
+/// 用户在创建 profile 时勾了 platform 之后,启动浏览器时如果调用方没显
+/// 指定 URL,这里返回对应的"工作页"自动打开。在普通 UI 启动 + 批量采
+/// 集都用上,体验一致。返回 None 表示该 profile 不绑定特定平台(普通
+/// 浏览,不自动跳转)。
+pub fn default_url_for_kol_platform(kol_platform: Option<&str>) -> Option<String> {
+  match kol_platform {
+    Some("tomato") => Some("https://kol.fanqieopen.com/".to_string()),
+    Some("qimao") => Some("https://kol.wtzw.com/".to_string()),
+    Some("douyin") => Some("https://www.douyin.com/follow".to_string()),
+    _ => None,
+  }
+}
+
 #[tauri::command]
 pub async fn launch_browser_profile(
   app_handle: tauri::AppHandle,
@@ -2228,6 +2243,10 @@ pub async fn launch_browser_profile(
       profile.host_os.as_deref().unwrap_or("another OS"),
     ));
   }
+
+  // 调用方没指定 URL 的话,根据 profile 绑定的 KOL 平台自动给一个
+  // 默认 URL — 用户点了"启动浏览器"就直接落到工作页。
+  let url = url.or_else(|| default_url_for_kol_platform(profile.kol_platform.as_deref()));
 
   // Team lock check: if profile is sync-enabled and user is on a team, acquire lock
   crate::team_lock::acquire_team_lock_if_needed(&profile).await?;
@@ -2595,6 +2614,9 @@ pub async fn launch_browser_profile_with_debugging(
       profile.host_os.as_deref().unwrap_or("another OS"),
     ));
   }
+
+  // 同 launch_browser_profile:URL 不指定时按 platform 给默认值。
+  let url = url.or_else(|| default_url_for_kol_platform(profile.kol_platform.as_deref()));
 
   let browser_runner = BrowserRunner::instance();
   browser_runner

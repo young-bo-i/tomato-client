@@ -347,6 +347,18 @@ class KolApi {
     );
   }
 
+  /// 整体替换调用者自己的通知邮箱列表。空数组 = 清空(不再接收任何
+  /// 通知)。返回服务端规范化后的列表(去重 + trim)。
+  updateMyNotifyEmails(payload: {
+    notify_emails: string[];
+  }): Promise<{ ok: boolean; notify_emails: string[] }> {
+    return this.request<{ ok: boolean; notify_emails: string[] }>(
+      "PUT",
+      "/api/users/me/notify_emails",
+      payload,
+    );
+  }
+
   /// 番茄收益看板 — caller's own polled tomato accounts with their
   /// latest snapshot, sorted by total_income DESC. Admin sees only
   /// their own profiles too; the all-users view is delivered via the

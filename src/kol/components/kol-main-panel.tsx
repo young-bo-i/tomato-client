@@ -7,6 +7,7 @@ import { useKolAuth } from "../hooks/use-kol-auth";
 import { KolDomDumpPanel } from "./kol-dom-dump-panel";
 import { KolDouyinVideosPanel } from "./kol-douyin-videos-panel";
 import { KolIncomePanel } from "./kol-income-panel";
+import { KolNotifySettingsPanel } from "./kol-notify-settings-panel";
 import { KolPasswordChangeButton } from "./kol-password-change-dialog";
 import { KolQimaoNoticePanel } from "./kol-qimao-notice-panel";
 import { KolQimaoStatsPanel } from "./kol-qimao-stats-panel";
@@ -32,7 +33,10 @@ const COMMON_GROUPS: NavGroup[] = [
   },
   {
     label: "我的配置",
-    items: [{ value: "my-submission-config", label: "我的提交词配置" }],
+    items: [
+      { value: "my-submission-config", label: "我的提交词配置" },
+      { value: "my-notify-settings", label: "通知邮箱" },
+    ],
   },
 ];
 
@@ -124,6 +128,7 @@ export function KolMainPanel() {
           {active === "my-income" && <KolIncomePanel />}
           {active === "my-qimao-notice" && <KolQimaoNoticePanel />}
           {active === "my-submission-config" && <KolSubmissionConfigPanel />}
+          {active === "my-notify-settings" && <KolNotifySettingsPanel />}
           {showTeamGroup && active === "team-contribution" && (
             <KolTeamSettingsPanel />
           )}

@@ -5,8 +5,9 @@ export interface User {
   username: string;
   role: Role;
   is_active: boolean;
-  /** Notification email — server sends offline alerts here. */
-  email: string | null;
+  /** 收件邮箱列表(可空数组)。每条通知会同时发给数组里的所有地址。
+   * 用户可以在「通知设置」里自己改;管理员可以在用户管理里替任何人改。 */
+  notify_emails: string[];
   /** 2-level hierarchy. NULL → tier-1 (or admin). Non-null → tier-2,
    * referencing the tier-1 above this user. */
   parent_user_id: number | null;
@@ -37,9 +38,8 @@ export interface CreateUserRequest {
   username: string;
   password: string;
   role: Role;
-  /** Optional notification email. Receives offline alerts for this
-   * user's profiles. */
-  email?: string | null;
+  /** 收件邮箱列表(可省略 = 空数组)。 */
+  notify_emails?: string[];
   /** Optional parent (creates this row as a tier-2 user). Must
    * reference an active tier-1 non-admin user. Admins cannot
    * have a parent. */
@@ -50,9 +50,8 @@ export interface UpdateUserRequest {
   password?: string;
   role?: Role;
   is_active?: boolean;
-  /** Tri-state: `undefined` (omit) preserves existing, `null` clears,
-   * non-empty string sets. The server applies the same semantics. */
-  email?: string | null;
+  /** 整体替换:undefined = 不改;[] = 清空;[...] = 整体覆盖。 */
+  notify_emails?: string[];
   /** Tri-state: `undefined` preserves, `null` promotes to tier-1,
    * `number` reassigns to a new parent. */
   parent_user_id?: number | null;
