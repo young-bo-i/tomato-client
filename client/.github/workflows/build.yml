@@ -107,7 +107,7 @@ jobs:
           # `--profile release-ci` 必须一致。
           TARGET: ${{ matrix.target }}
           PROFILE: release-ci
-        run: pnpm tauri build --target ${{ matrix.target }} --profile release-ci
+        run: pnpm tauri build --target ${{ matrix.target }} -- --profile release-ci
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
