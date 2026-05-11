@@ -50,7 +50,7 @@ const TEAM_GROUPS: NavGroup[] = [
   },
 ];
 
-const ADMIN_GROUPS: NavGroup[] = [
+const DASHBOARD_GROUPS: NavGroup[] = [
   {
     label: "数据看板",
     items: [
@@ -78,7 +78,7 @@ export function KolMainPanel() {
   const groups: NavGroup[] = [
     ...COMMON_GROUPS,
     ...(showTeamGroup ? TEAM_GROUPS : []),
-    ...(isAdmin ? ADMIN_GROUPS : []),
+    ...DASHBOARD_GROUPS,
   ];
 
   // Tier badge surfaces the user's place in the hierarchy. Admin >
@@ -132,8 +132,8 @@ export function KolMainPanel() {
           {showTeamGroup && active === "team-contribution" && (
             <KolTeamSettingsPanel />
           )}
-          {isAdmin && active === "tomato-stats" && <KolTomatoStatsPanel />}
-          {isAdmin && active === "qimao-stats" && <KolQimaoStatsPanel />}
+          {active === "tomato-stats" && <KolTomatoStatsPanel />}
+          {active === "qimao-stats" && <KolQimaoStatsPanel />}
         </div>
       </div>
     </div>

@@ -81,13 +81,17 @@ export function KolQimaoNoticePanel() {
         </div>
       )}
 
+      <GrandTotalBanner rows={rows} />
+
       <div className="rounded-md border overflow-x-auto">
-        <Table className="min-w-[900px]">
+        <Table className="min-w-[1000px]">
           <TableHeader>
             <TableRow>
               <TableHead className="w-28">月份</TableHead>
               <TableHead>账号 / 所属</TableHead>
-              <TableHead className="min-w-[260px]">标题</TableHead>
+              <TableHead className="min-w-[200px]">标题</TableHead>
+              <TableHead className="w-28 text-right">总收益</TableHead>
+              <TableHead className="w-44">明细</TableHead>
               <TableHead>收件人</TableHead>
               <TableHead className="w-32">发送时间</TableHead>
               <TableHead className="w-20 text-right">操作</TableHead>
@@ -96,14 +100,14 @@ export function KolQimaoNoticePanel() {
           <TableBody>
             {loading && rows.length === 0 ? (
               <TableRow>
-                <TableCell colSpan={6} className="text-center text-muted-foreground">
+                <TableCell colSpan={8} className="text-center text-muted-foreground">
                   加载中...
                 </TableCell>
               </TableRow>
             ) : rows.length === 0 ? (
               <TableRow>
                 <TableCell
-                  colSpan={6}
+                  colSpan={8}
                   className="text-center text-muted-foreground py-6"
                 >
                   暂无通知记录 — 等待下一次月度收益结算
@@ -127,6 +131,20 @@ export function KolQimaoNoticePanel() {
                   </TableCell>
                   <TableCell className="align-top">
                     <span className="text-sm">{r.title}</span>
+                  </TableCell>
+                  <TableCell className="align-top text-right font-mono">
+                    <span
+                      className={
+                        r.total_income_cents && r.total_income_cents > 0
+                          ? "text-success font-semibold"
+                          : "text-muted-foreground"
+                      }
+                    >
+                      {fmtYuan(r.total_income_cents)}
+                    </span>
+                  </TableCell>
+                  <TableCell className="align-top">
+                    <BreakdownChips row={r} />
                   </TableCell>
                   <TableCell className="align-top">
                     <span className="text-xs text-muted-foreground">
@@ -212,6 +230,12 @@ function NoticeDetailDialog({
         </DialogHeader>
         {notice && (
           <div className="flex flex-col gap-3">
+            <div className="grid grid-cols-4 gap-2">
+              <AmountCard label="总收益" cents={notice.total_income_cents} highlight />
+              <AmountCard label="拉新" cents={notice.new_user_income_cents} />
+              <AmountCard label="拉活" cents={notice.active_income_cents} />
+              <AmountCard label="拉新激励" cents={notice.new_user_bonus_cents} />
+            </div>
             <div className="grid grid-cols-2 gap-2 text-xs">
               <Stat label="账号" value={notice.profile_name} />
               <Stat label="所属用户" value={`@${notice.owner_username}`} />
@@ -274,4 +298,102 @@ function Stat({ label, value }: { label: string; value: string }) {
 function fmtClock(iso: string): string {
   const d = new Date(iso);
   return `${d.getMonth() + 1}/${d.getDate()} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+}
+
+/// Format cents as ¥XX.XX. NULL → "—". Used both in table cells and
+/// the detail dialog cards.
+function fmtYuan(cents: number | null): string {
+  if (cents === null || cents === undefined) return "—";
+  return `¥${(cents / 100).toFixed(2)}`;
+}
+
+/// Compact pills showing the 3 sub-breakdown amounts when present.
+/// Hidden when all three are NULL (parser missed everything).
+function BreakdownChips({ row }: { row: QimaoNoticeRow }) {
+  const items: Array<{ label: string; cents: number | null }> = [
+    { label: "拉新", cents: row.new_user_income_cents },
+    { label: "拉活", cents: row.active_income_cents },
+    { label: "激励", cents: row.new_user_bonus_cents },
+  ];
+  const anyPresent = items.some((i) => i.cents !== null);
+  if (!anyPresent) {
+    return <span className="text-[10px] text-muted-foreground">—</span>;
+  }
+  return (
+    <div className="flex flex-wrap gap-1">
+      {items.map((i) => (
+        <span
+          key={i.label}
+          className="inline-flex items-center gap-1 rounded-md border bg-card px-1.5 py-0.5 text-[10px] font-mono"
+        >
+          <span className="text-muted-foreground">{i.label}</span>
+          <span
+            className={
+              i.cents && i.cents > 0 ? "font-semibold" : "text-muted-foreground"
+            }
+          >
+            {fmtYuan(i.cents)}
+          </span>
+        </span>
+      ))}
+    </div>
+  );
+}
+
+/// Top-of-panel banner summarizing the total income across all
+/// currently-loaded rows. Useful for KOLs to eyeball cumulative income
+/// without doing the math themselves.
+function GrandTotalBanner({ rows }: { rows: QimaoNoticeRow[] }) {
+  const grandCents = rows.reduce(
+    (acc, r) => acc + (r.total_income_cents ?? 0),
+    0,
+  );
+  const countWithAmount = rows.filter(
+    (r) => r.total_income_cents !== null && r.total_income_cents > 0,
+  ).length;
+  if (grandCents <= 0) return null;
+  return (
+    <div className="rounded-md border bg-success/10 border-success/40 px-4 py-3">
+      <div className="flex items-baseline gap-2">
+        <span className="text-xs text-muted-foreground">累计收益</span>
+        <span className="text-2xl font-bold font-mono text-success">
+          {fmtYuan(grandCents)}
+        </span>
+        <span className="text-xs text-muted-foreground">
+          · {countWithAmount} 条已解析
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function AmountCard({
+  label,
+  cents,
+  highlight = false,
+}: {
+  label: string;
+  cents: number | null;
+  highlight?: boolean;
+}) {
+  return (
+    <div
+      className={
+        highlight
+          ? "rounded-md border-2 border-success/60 bg-success/10 p-2 flex flex-col"
+          : "rounded-md border bg-card p-2 flex flex-col"
+      }
+    >
+      <span className="text-[10px] text-muted-foreground">{label}</span>
+      <span
+        className={
+          highlight
+            ? "text-base font-semibold font-mono text-success"
+            : "text-sm font-mono"
+        }
+      >
+        {fmtYuan(cents)}
+      </span>
+    </div>
+  );
 }

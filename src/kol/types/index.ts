@@ -476,6 +476,13 @@ export interface QimaoNoticeRow {
   emailed_at: string | null;
   send_error: string | null;
 
+  /** Parsed income amounts (cents = ×100 yuan). NULL when the parser
+   * missed (e.g. platform changed wording). UI divides by 100 for display. */
+  total_income_cents: number | null;
+  new_user_income_cents: number | null;
+  active_income_cents: number | null;
+  new_user_bonus_cents: number | null;
+
   created_at: string;
 }
 
