@@ -83,8 +83,12 @@ jobs:
         shell: bash
         working-directory: src-tauri
         run: |
-          cargo build --bin donut-proxy --target ${{ matrix.target }} --profile release-ci
-          cargo build --bin donut-daemon --target ${{ matrix.target }} --profile release-ci
+          # 两个 sidecar 在一次 cargo 调用里编译:共享依赖只编一遍,两个
+          # bin 的 codegen 也能并行(分开两次调用会串行 + 重复解析依赖图)。
+          # 用与下面 Tauri build 相同的 release-ci profile,这样共享依赖的
+          # 编译产物能被 Tauri build 直接复用(同 target 目录 + 同 profile)。
+          cargo build --bin donut-proxy --bin donut-daemon \
+            --target ${{ matrix.target }} --profile release-ci
           mkdir -p binaries
           if [[ "${{ matrix.platform }}" == "windows-latest" ]]; then
             cp target/${{ matrix.target }}/release-ci/donut-proxy.exe \
@@ -107,6 +111,13 @@ jobs:
           # `--profile release-ci` 必须一致。
           TARGET: ${{ matrix.target }}
           PROFILE: release-ci
+        # ⚠️ 那个 `--` 是必须的,别删!Tauri CLI build 自己没有 --profile
+        # 选项,要把 `--profile release-ci` 透传给底层 cargo,必须用 `--`
+        # 分隔。删掉它 → tauri 把 `--profile` 当成自己的参数 → 直接报
+        # `error: unexpected argument '--profile' found` 打包失败(历史上
+        # run #6/#7 就是这么挂的,dd38aa4 修的就是这里)。pnpm 版本已用
+        # package.json 的 packageManager 锁死(pnpm@10.30.1),保证它转发
+        # `--` 的行为稳定 —— 升级 pnpm 前务必在本地验证 `--` 仍被透传。
         run: pnpm tauri build --target ${{ matrix.target }} -- --profile release-ci
 
       - name: Upload artifacts

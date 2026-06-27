@@ -19,10 +19,13 @@ updates:
       include: "scope"
 
   # Rust dependencies
+  # 月度而非每周:每次 Cargo.lock 变动都会让下一次 GitHub Actions 打包的
+  # Rust 缓存失效、退回冷构建(~80min vs 缓存命中的 ~20min)。私有工具不
+  # 需要每周追依赖,月度已足够,能显著减少昂贵的冷构建次数。
   - package-ecosystem: "cargo"
     directory: "/src-tauri"
     schedule:
-      interval: "weekly"
+      interval: "monthly"
       day: "saturday"
       time: "09:00"
     allow:

@@ -189,12 +189,19 @@ split-debuginfo = "unpacked"
 # 的二进制大几十 MB、运行慢 10% 左右 — 对 KOL 这种 IO/UI bound 的
 # 工具,运行差距完全感知不到。
 #
+# 进一步:opt-level=1(默认 release 是 3)。LLVM 的 -O3 → -O1 是单项
+# 最大的 codegen 提速(再省 ~20-35% 编译时间),代价是数值热循环慢一些
+# —— 本工具是 IO/UI/网络 bound,text_filter 那点 CJK 正则在 -O1 下也
+# 毫无感知。配合 codegen-units=16 + lto=false,冷构建(无缓存)能从
+# ~80min 降到 ~50-60min,热构建(缓存命中)从 ~25min 降到 ~18-20min。
+#
 # Tauri build 用 `--profile release-ci`;手动 cargo build sidecar 也
 # 用 `--profile release-ci`。target/{target}/release-ci/ 是产物路径。
 [profile.release-ci]
 inherits = "release"
 codegen-units = 16
 lto = false
+opt-level = 1
 
 [profile.test]
 # Optimize test builds for faster compilation
