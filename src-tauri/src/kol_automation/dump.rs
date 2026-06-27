@@ -27,8 +27,7 @@ use crate::browser_runner::BrowserRunner;
 use crate::profile::types::BrowserProfile;
 use crate::wayfern_manager::WayfernManager;
 
-use super::cdp::Cdp;
-use super::gather::fetch_first_page_ws;
+use super::cdp::{fetch_first_page_ws, Cdp};
 use super::ingest::ProfileLoginState;
 
 pub const DOUYIN_URL: &str = "https://www.douyin.com/follow";

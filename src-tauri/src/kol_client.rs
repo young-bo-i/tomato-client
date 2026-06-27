@@ -6,8 +6,10 @@
 //! on logout.
 //!
 //! **Strict online mode**: if credentials are unset or the server is
-//! unreachable, profile operations return an error. There is no local cache
-//! / offline fallback — the user explicitly chose this behavior.
+//! unreachable, profile operations return an error — there is no offline
+//! fallback that serves stale data when the server is down. (A short-lived
+//! 5 s profile-list cache, `PROFILE_LIST_CACHE_TTL` below, exists purely to
+//! coalesce bursts of reads within a single window; it is not a fallback.)
 
 use chrono::{DateTime, Local};
 use once_cell::sync::Lazy;
@@ -67,7 +69,10 @@ impl KolClient {
     }
   }
 
-  fn invalidate_profile_cache(&self) {
+  /// Drop the cached profile list so the next `list_profiles` does a fresh
+  /// HTTP fetch. Called internally after any write, and by the batch
+  /// orchestrator on lifecycle events that need an authoritative read.
+  pub fn invalidate_profile_cache(&self) {
     if let Ok(mut g) = self.profile_list_cache.lock() {
       *g = None;
     }
@@ -256,7 +261,7 @@ impl KolClient {
 
   /// Bulk-upload videos scraped by the douyin gather pipeline. Server caps
   /// each request at 200 rows and dedupes on (profile_id, aweme_id) — the
-  /// caller (kol_automation::gather::Batcher) already chunks accordingly.
+  /// caller (`kol_automation::ingest::handle_bulk`) already chunks accordingly.
   pub async fn bulk_submit_douyin_videos(
     &self,
     items: &[VideoSubmission],

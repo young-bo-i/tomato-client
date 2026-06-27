@@ -462,21 +462,16 @@ pub async fn kill_unauth_profile(app: tauri::AppHandle, profile_id: Uuid) {
 
 // ---- profile resolution -----------------------------------------------
 
-/// Cache for list_douyin_profiles. The underlying `profile_manager.list_profiles()`
-/// is **not** a local disk read — it round-trips to the remote
-/// tomato-server (`KOL_CLIENT.list_profiles_blocking()` → HTTP
-/// `GET /api/profiles`). The status panel polls every 3-5s and
-/// snapshot_status() is its primary consumer; without this cache that
-/// poll alone burns ~80 KB/s of background traffic.
+/// List this machine's douyin-gather-eligible profiles (wayfern + douyin).
 ///
-/// 5s TTL aligns with UI poll interval — same observable freshness,
-/// roughly 1/5 the HTTP load.
-static PROFILE_LIST_CACHE: Lazy<StdMutex<Option<(Instant, Vec<BrowserProfile>)>>> =
-  Lazy::new(|| StdMutex::new(None));
-
-const PROFILE_LIST_TTL: Duration = Duration::from_secs(5);
-
-fn fetch_douyin_profiles_uncached() -> Result<Vec<BrowserProfile>, String> {
+/// `profile_manager.list_profiles()` is **not** a local disk read — in this
+/// fork it round-trips to the remote tomato-server via
+/// `KOL_CLIENT.list_profiles_blocking()` (HTTP `GET /api/profiles`). That
+/// HTTP fetch is already coalesced by `KolClient`'s own 5s profile-list
+/// cache, so we don't keep a second cache here — the status panel's 3-5s
+/// poll hits the shared cache, not the network. The only per-call cost is a
+/// trivial in-memory filter over a small Vec.
+fn list_douyin_profiles() -> Result<Vec<BrowserProfile>, String> {
   let runner = BrowserRunner::instance();
   let all = runner
     .profile_manager
@@ -492,29 +487,11 @@ fn fetch_douyin_profiles_uncached() -> Result<Vec<BrowserProfile>, String> {
   )
 }
 
-fn list_douyin_profiles() -> Result<Vec<BrowserProfile>, String> {
-  // Fast path: cache hit within TTL.
-  if let Ok(g) = PROFILE_LIST_CACHE.lock() {
-    if let Some((t, v)) = g.as_ref() {
-      if t.elapsed() < PROFILE_LIST_TTL {
-        return Ok(v.clone());
-      }
-    }
-  }
-  // Miss / expired: fetch and store.
-  let fresh = fetch_douyin_profiles_uncached()?;
-  if let Ok(mut g) = PROFILE_LIST_CACHE.lock() {
-    *g = Some((Instant::now(), fresh.clone()));
-  }
-  Ok(fresh)
-}
-
-/// Force-invalidate the profile list cache. Called on lifecycle events
-/// (batch_start/stop) where the next read needs to be authoritative.
+/// Force the next profile read to be authoritative. Called on lifecycle
+/// events (batch_start/stop) — delegates to the single shared cache in
+/// `KolClient` so a stale entry can't drive a launch decision.
 fn invalidate_profile_cache() {
-  if let Ok(mut g) = PROFILE_LIST_CACHE.lock() {
-    *g = None;
-  }
+  crate::kol_client::KOL_CLIENT.invalidate_profile_cache();
 }
 
 async fn count_running_browsers(profiles: &[BrowserProfile]) -> usize {

@@ -72,35 +72,46 @@ pub fn load_from_disk() {
   }
 }
 
+/// Serialize the current cache to a string, or `None` if the lock is
+/// poisoned or serialization fails (both already logged).
+fn serialize_snapshot(ctx: &str) -> Option<String> {
+  let snapshot: HashMap<String, DateTime<Local>> = match CACHE.lock() {
+    Ok(g) => g.clone(),
+    Err(_) => return None,
+  };
+  match serde_json::to_string(&snapshot) {
+    Ok(s) => Some(s),
+    Err(e) => {
+      log::warn!("kol-dedup {ctx}: serialize failed: {e}");
+      None
+    }
+  }
+}
+
+/// Atomically write `json` to the cache file via a temp-file + rename.
+/// Shared by the async flush and the synchronous shutdown flush.
+fn write_atomic(json: &str, ctx: &str) {
+  let path = cache_path();
+  let tmp = path.with_extension("json.tmp");
+  if let Some(parent) = path.parent() {
+    let _ = std::fs::create_dir_all(parent);
+  }
+  if let Err(e) = std::fs::write(&tmp, json) {
+    log::warn!("kol-dedup {ctx}: write tmp failed: {e}");
+    return;
+  }
+  if let Err(e) = std::fs::rename(&tmp, &path) {
+    log::warn!("kol-dedup {ctx}: rename failed: {e}");
+  }
+}
+
 /// Atomic flush. Serializes the cache, then offloads the blocking file
 /// write + rename to a `spawn_blocking` task so the tokio worker thread
 /// is never parked on disk IO (~5 MB at saturation).
 fn flush_to_disk() {
-  let snapshot: HashMap<String, DateTime<Local>> = match CACHE.lock() {
-    Ok(g) => g.clone(),
-    Err(_) => return,
-  };
-  let path = cache_path();
-  let json = match serde_json::to_string(&snapshot) {
-    Ok(s) => s,
-    Err(e) => {
-      log::warn!("kol-dedup flush: serialize failed: {e}");
-      return;
-    }
-  };
-  tokio::task::spawn_blocking(move || {
-    let tmp = path.with_extension("json.tmp");
-    if let Some(parent) = path.parent() {
-      let _ = std::fs::create_dir_all(parent);
-    }
-    if let Err(e) = std::fs::write(&tmp, &json) {
-      log::warn!("kol-dedup flush: write tmp failed: {e}");
-      return;
-    }
-    if let Err(e) = std::fs::rename(&tmp, &path) {
-      log::warn!("kol-dedup flush: rename failed: {e}");
-    }
-  });
+  if let Some(json) = serialize_snapshot("flush") {
+    tokio::task::spawn_blocking(move || write_atomic(&json, "flush"));
+  }
 }
 
 /// Drop expired entries in place. O(n) walk but n stays bounded by
@@ -130,38 +141,19 @@ pub async fn start_flush_loop() {
 /// the tokio runtime may already be tearing down at call time.
 pub fn flush_now() {
   evict_expired();
-  let snapshot: HashMap<String, DateTime<Local>> = match CACHE.lock() {
-    Ok(g) => g.clone(),
-    Err(_) => return,
-  };
-  let path = cache_path();
-  let json = match serde_json::to_string(&snapshot) {
-    Ok(s) => s,
-    Err(e) => { log::warn!("kol-dedup flush_now: serialize: {e}"); return; }
-  };
-  let tmp = path.with_extension("json.tmp");
-  if let Some(parent) = path.parent() { let _ = std::fs::create_dir_all(parent); }
-  if let Err(e) = std::fs::write(&tmp, &json) {
-    log::warn!("kol-dedup flush_now: write: {e}"); return;
-  }
-  if let Err(e) = std::fs::rename(&tmp, &path) {
-    log::warn!("kol-dedup flush_now: rename: {e}");
+  if let Some(json) = serialize_snapshot("flush_now") {
+    write_atomic(&json, "flush_now");
   }
 }
 
 /// Test if a row should be SKIPPED (same profile re-seeing the same
 /// aweme within 24h). On miss, records the key and returns `false`.
 ///
-/// `title_filtered` and `suggest_filtered` are accepted for signature
-/// compatibility but are no longer used for dedup — cross-profile
-/// ownership is preserved in `douyin_videos` and alias dedup is
-/// handled server-side via `ON CONFLICT DO NOTHING`.
-pub fn check_and_record(
-  profile_id: Uuid,
-  aweme_id: &str,
-  _title_filtered: Option<&str>,
-  _suggest_filtered: Option<&str>,
-) -> bool {
+/// Dedup is keyed only on `(profile_id, aweme_id)`. We intentionally do
+/// NOT dedup on filtered title/suggest: cross-profile ownership is
+/// preserved in `douyin_videos`, and alias dedup is handled server-side
+/// via `ON CONFLICT DO NOTHING`.
+pub fn check_and_record(profile_id: Uuid, aweme_id: &str) -> bool {
   let now = Local::now();
   let expires_at = now + chrono::Duration::hours(TTL_HOURS);
   let aweme_key = format!("aweme:{profile_id}:{aweme_id}");
@@ -192,33 +184,16 @@ mod tests {
   #[test]
   fn miss_then_hit_aweme() {
     let pid = Uuid::new_v4();
-    assert!(!check_and_record(pid, "v1", None, None));
-    assert!(check_and_record(pid, "v1", None, None));
+    assert!(!check_and_record(pid, "v1"));
+    assert!(check_and_record(pid, "v1"));
   }
 
   #[test]
   fn different_profile_same_aweme_not_deduped_by_aweme() {
     let p1 = Uuid::new_v4();
     let p2 = Uuid::new_v4();
-    assert!(!check_and_record(p1, "v2", None, None));
+    assert!(!check_and_record(p1, "v2"));
     // p2 sees same aweme — not deduped on aweme key.
-    assert!(!check_and_record(p2, "v2", None, None));
-  }
-
-  #[test]
-  fn same_filtered_title_different_profiles_not_deduped() {
-    let p1 = Uuid::new_v4();
-    let p2 = Uuid::new_v4();
-    // Per-profile ownership: both profiles' rows should be forwarded.
-    assert!(!check_and_record(p1, "a1", Some("新月池爷"), None));
-    assert!(!check_and_record(p2, "a2", Some("新月池爷"), None));
-  }
-
-  #[test]
-  fn same_filtered_suggest_different_profiles_not_deduped() {
-    let p1 = Uuid::new_v4();
-    let p2 = Uuid::new_v4();
-    assert!(!check_and_record(p1, "a3", None, Some("乡野田间的视频")));
-    assert!(!check_and_record(p2, "a4", None, Some("乡野田间的视频")));
+    assert!(!check_and_record(p2, "v2"));
   }
 }

@@ -1,7 +1,7 @@
 "use client";
+import { ErrorBanner } from "./shared/error-banner";
 
 import { useCallback, useEffect, useState } from "react";
-import React from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { useVisibilityInterval } from "../hooks/use-visibility-interval";
@@ -15,56 +15,10 @@ import {
 } from "@/components/ui/table";
 import { kolApi } from "../api/client";
 import type { QimaoStatsAccount, QimaoStatsOverview } from "../types";
+import { StatCard } from "./shared/stat-card";
+import { formatRelative } from "../lib/format";
 
 const REFRESH_INTERVAL_MS = 30_000;
-
-type Tone = "neutral" | "success" | "destructive" | "warning" | "muted";
-
-const TONE_CLASS: Record<Tone, string> = {
-  neutral: "border-border bg-card",
-  success: "border-success/40 bg-success/5",
-  destructive: "border-destructive/40 bg-destructive/5",
-  warning: "border-warning/40 bg-warning/5",
-  muted: "border-border bg-muted/30",
-};
-
-const VALUE_CLASS: Record<Tone, string> = {
-  neutral: "text-foreground",
-  success: "text-success",
-  destructive: "text-destructive",
-  warning: "text-warning",
-  muted: "text-muted-foreground",
-};
-
-const StatCard = React.memo(function StatCard({
-  label,
-  value,
-  tone = "neutral",
-}: {
-  label: string;
-  value: number;
-  tone?: Tone;
-}) {
-  return (
-    <div className={`rounded-md border px-3 py-2 ${TONE_CLASS[tone]}`}>
-      <div className="text-xs text-muted-foreground">{label}</div>
-      <div className={`mt-1 font-mono text-2xl tabular-nums ${VALUE_CLASS[tone]}`}>
-        {value.toLocaleString()}
-      </div>
-    </div>
-  );
-});
-
-function formatRelative(iso: string | null | undefined): string {
-  if (!iso) return "—";
-  const dt = new Date(iso);
-  const diff = Date.now() - dt.getTime();
-  if (diff < 60_000) return "刚刚";
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`;
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`;
-  if (diff < 7 * 86_400_000) return `${Math.floor(diff / 86_400_000)} 天前`;
-  return dt.toLocaleDateString();
-}
 
 export function KolQimaoStatsPanel() {
   const [overview, setOverview] = useState<QimaoStatsOverview | null>(null);
@@ -120,9 +74,7 @@ export function KolQimaoStatsPanel() {
       </div>
 
       {error && (
-        <div className="rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          {error}
-        </div>
+        <ErrorBanner>{error}</ErrorBanner>
       )}
 
       {/* === Overview tiles ===

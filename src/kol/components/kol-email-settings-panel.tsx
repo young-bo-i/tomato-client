@@ -1,4 +1,5 @@
 "use client";
+import { ErrorBanner } from "./shared/error-banner";
 
 import { useCallback, useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -143,9 +144,7 @@ export function KolEmailSettingsPanel() {
       </div>
 
       {error && (
-        <div className="rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          {error}
-        </div>
+        <ErrorBanner>{error}</ErrorBanner>
       )}
 
       {/* === SMTP server === */}

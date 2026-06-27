@@ -1,4 +1,5 @@
 "use client";
+import { ErrorBanner } from "./shared/error-banner";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -273,9 +274,7 @@ function JobTabContent({
 
       {/* History table */}
       {histError && (
-        <div className="rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          加载历史失败: {histError}
-        </div>
+        <ErrorBanner>加载历史失败: {histError}</ErrorBanner>
       )}
       <div className="rounded-md border overflow-x-auto">
         <Table>

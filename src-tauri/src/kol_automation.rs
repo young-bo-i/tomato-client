@@ -2,27 +2,24 @@
 //!
 //! Hosts the Tauri commands the React layer calls into:
 //! - `kol_login_*`, `kol_refresh_*` — thin event-emitter shims that ask
-//!   the frontend to drive an existing browser-launch flow. Unchanged
-//!   from the prior implementation; preserved for the React panels that
-//!   still call them.
-//! - `kol_start_gather` / `kol_stop_gather` / `kol_gather_status` /
-//!   `kol_is_gather_running` — the new, real gather pipeline. The heavy
-//!   lifting lives in `gather` (Orchestrator + Worker + Batcher) and
-//!   `cdp` (persistent CDP client). See those modules for design notes.
+//!   the frontend to drive an existing browser-launch flow.
+//! - `kol_gather_local_stats` — snapshot of the local ingest counters.
+//!
+//! The active gather pipeline is the extension-based one: the in-browser
+//! MV3 extension (`extension/content.js`) posts rows to Donut's local axum
+//! (`ingest`), which the `batch` rolling worker pool drives. CDP plumbing
+//! lives in `cdp` (used by the one-shot DOM dump in `dump`).
 
 pub mod batch;
 pub mod cdp;
 pub mod dedup;
 pub mod dump;
 pub mod extension;
-pub mod gather;
 pub mod ingest;
 pub mod text_filter;
 
 use serde_json::json;
 use tauri::Emitter;
-
-pub use gather::{GatherStatus, ProfileStatus, StartGatherRequest};
 
 // ============================================================
 // Login / refresh shims (frontend-driven)
@@ -74,31 +71,8 @@ pub async fn kol_refresh_douyin(
 }
 
 // ============================================================
-// Gather pipeline (real)
+// Local ingest stats
 // ============================================================
-
-#[tauri::command]
-pub async fn kol_start_gather(
-  app: tauri::AppHandle,
-  request: StartGatherRequest,
-) -> Result<GatherStatus, String> {
-  gather::start(app, request).await
-}
-
-#[tauri::command]
-pub fn kol_stop_gather() -> Result<GatherStatus, String> {
-  gather::stop()
-}
-
-#[tauri::command]
-pub fn kol_is_gather_running() -> bool {
-  gather::is_running()
-}
-
-#[tauri::command]
-pub fn kol_gather_status() -> GatherStatus {
-  gather::current_status()
-}
 
 #[tauri::command]
 pub fn kol_gather_local_stats() -> ingest::StatsSnapshot {

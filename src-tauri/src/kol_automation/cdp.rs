@@ -24,6 +24,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
+use serde::Deserialize;
 use serde_json::{json, Value};
 use tokio::sync::{mpsc, oneshot, Mutex};
 use tokio_tungstenite::{connect_async, tungstenite::Message};
@@ -170,4 +171,59 @@ impl Cdp {
   pub async fn close(&self) {
     let _ = self.cmd_tx.send(WriterCmd::Close).await;
   }
+}
+
+#[derive(Deserialize)]
+struct PageTargetEntry {
+  #[serde(rename = "type")]
+  target_type: String,
+  #[serde(rename = "webSocketDebuggerUrl", default)]
+  ws_url: Option<String>,
+  #[serde(default)]
+  url: Option<String>,
+}
+
+/// Resolve a Wayfern CDP debug port to a page target's WebSocket URL by
+/// querying `http://127.0.0.1:{port}/json`. Prefers a douyin.com tab when
+/// several are open. Used by the one-shot DOM dump path (`dump.rs`).
+pub(super) async fn fetch_first_page_ws(port: u16) -> Result<String, String> {
+  // Bounded by both connect-only and overall timeouts so a wedged CDP
+  // port doesn't hang the caller indefinitely.
+  static HTTP: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+  let client = HTTP.get_or_init(|| {
+    reqwest::Client::builder()
+      .timeout(Duration::from_secs(3))
+      .connect_timeout(Duration::from_secs(1))
+      .build()
+      .expect("kol_automation::cdp reqwest client init")
+  });
+  let url = format!("http://127.0.0.1:{port}/json");
+  let resp = client
+    .get(&url)
+    .send()
+    .await
+    .map_err(|e| format!("targets fetch: {e}"))?;
+  let targets: Vec<PageTargetEntry> = resp
+    .json()
+    .await
+    .map_err(|e| format!("targets parse: {e}"))?;
+
+  // Prefer a target whose URL hints at douyin.com — covers the case where
+  // an existing instance has multiple tabs open.
+  if let Some(t) = targets
+    .iter()
+    .find(|t| {
+      t.target_type == "page"
+        && t.ws_url.is_some()
+        && t.url.as_deref().map(|u| u.contains("douyin")).unwrap_or(false)
+    })
+    .or_else(|| {
+      targets
+        .iter()
+        .find(|t| t.target_type == "page" && t.ws_url.is_some())
+    })
+  {
+    return Ok(t.ws_url.clone().unwrap());
+  }
+  Err("no page target with ws url".into())
 }

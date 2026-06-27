@@ -1,4 +1,5 @@
 "use client";
+import { ErrorBanner } from "./shared/error-banner";
 
 import { useCallback, useEffect, useState } from "react";
 import { Badge } from "@/components/ui/badge";
@@ -14,23 +15,13 @@ import {
 import type { BrowserProfile } from "@/types";
 import { kolApi } from "../api/client";
 import type { QimaoBook } from "../types";
+import { formatRelative } from "../lib/format";
 
 function formatWords(text: string | null, raw: number | null): string {
   if (text && text.length > 0) return text;
   if (raw == null) return "—";
   if (raw >= 10000) return `${(raw / 10000).toFixed(1)}万字`;
   return `${raw}字`;
-}
-
-function formatRelative(iso: string | null | undefined): string {
-  if (!iso) return "—";
-  const dt = new Date(iso);
-  const diff = Date.now() - dt.getTime();
-  if (diff < 60_000) return "刚刚";
-  if (diff < 3_600_000) return `${Math.floor(diff / 60_000)} 分钟前`;
-  if (diff < 86_400_000) return `${Math.floor(diff / 3_600_000)} 小时前`;
-  if (diff < 7 * 86_400_000) return `${Math.floor(diff / 86_400_000)} 天前`;
-  return dt.toLocaleDateString();
 }
 
 export function KolQimaoBooksPanel() {
@@ -240,9 +231,7 @@ export function KolQimaoBooksPanel() {
       </div>
 
       {error && (
-        <div className="rounded-md border border-destructive/50 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          {error}
-        </div>
+        <ErrorBanner>{error}</ErrorBanner>
       )}
 
       <div className="rounded-md border overflow-x-auto">

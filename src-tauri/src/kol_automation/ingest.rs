@@ -211,16 +211,11 @@ pub async fn handle_bulk(
       continue;
     }
 
-    // Local 24h dedup gate: skip rows whose aweme/profile, filtered
-    // title, or filtered suggest were already seen within TTL. Saves
-    // remote round trips and avoids stat duplicates for cross-profile
-    // book-name overlap.
-    if dedup::check_and_record(
-      r.profile_id,
-      &r.aweme_id,
-      title_filtered.as_deref(),
-      suggest_word_filtered.as_deref(),
-    ) {
+    // Local 24h dedup gate, keyed on (profile_id, aweme_id): skip a row
+    // the same profile already saw within TTL. Saves a remote round trip
+    // and a server INSERT attempt. Cross-profile sightings are kept (each
+    // profile owns its own douyin_videos row).
+    if dedup::check_and_record(r.profile_id, &r.aweme_id) {
       skipped_local += 1;
       continue;
     }
